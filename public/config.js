@@ -1,3 +1,3 @@
-﻿/** Atualizado em 2026-05-27 15:21 */
-window.__API_BASE__ = 'https://connivingly-unsulfureous-miesha.ngrok-free.dev'
+﻿/** Atualizado para produção — backend no Railway */
+window.__API_BASE__ = 'https://bot-andy-production.up.railway.app'
 window.__VERCEL_ORIGIN__ = 'https://bot-andy.vercel.app'

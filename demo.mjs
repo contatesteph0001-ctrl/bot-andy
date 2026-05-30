@@ -1,5 +1,5 @@
 import 'dotenv/config'
-import { existsSync, rmSync, readdirSync, lstatSync } from 'fs'
+import { existsSync, rmSync, readdirSync, lstatSync, mkdirSync } from 'fs'
 import { services, products } from './src/config.mjs'
 import { initDb } from './src/db.mjs'
 import { log, error as logError } from './src/logger.mjs'
@@ -8,6 +8,21 @@ import { initReminders } from './src/reminders.mjs'
 
 const RECONNECT_DELAY_MS = 15_000
 const SESSION = process.env.WPP_SESSION || 'andy-prod'
+
+// Garante que o diretório base de tokens exista antes de qualquer operação.
+// Necessário em volume Railway recém-criado (/app/data/tokens ainda vazio),
+// para que a limpeza de lock e o WPPConnect não falhem por path inexistente.
+function garantirDiretorioTokens() {
+  const baseDir = process.env.WPP_USER_DATA_DIR || `/app/tokens/${SESSION}`
+  try {
+    if (!existsSync(baseDir)) {
+      mkdirSync(baseDir, { recursive: true })
+      log(`📁 Diretório de tokens criado: ${baseDir}`)
+    }
+  } catch (err) {
+    logError(`Falha ao criar diretório de tokens ${baseDir}:`, err.message)
+  }
+}
 
 // Remove lock files do Chromium que ficam presos entre deploys.
 // No Linux, SingletonLock/Cookie/Socket são SYMLINKS apontando para o hostname
@@ -66,6 +81,7 @@ async function connectWhatsApp() {
   while (tentativa < MAX_CONNECT_ATTEMPTS) {
     tentativa++
     try {
+      garantirDiretorioTokens()
       limparLockChromium()
       await startWhatsApp()
       log('WhatsApp conectado com sucesso.')
