@@ -98,6 +98,7 @@ bookingRouter.get('/api/disponibilidade', async (req, res) => {
 
     if (staff_id === 'qualquer') {
       const slots = filtrarSlots(await getNextAvailableAcrossStaff(data, duracao))
+      console.log('[debug-slots] limiteMinimo:', limiteMinimo.toISOString(), 'primeiro slot:', slots[0]?.start)
       return res.json({ slots })
     }
 
@@ -105,6 +106,7 @@ bookingRouter.get('/api/disponibilidade', async (req, res) => {
     if (!member?.active) return res.status(400).json({ erro: 'barbeiro inválido' })
 
     const slots = filtrarSlots(await findFreeSlots(staff_id, data, duracao))
+    console.log('[debug-slots] limiteMinimo:', limiteMinimo.toISOString(), 'primeiro slot:', slots[0]?.start)
     return res.json({
       slots: slots.map(sl => ({
         ...sl,
