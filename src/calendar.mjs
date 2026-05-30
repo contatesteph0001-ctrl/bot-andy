@@ -119,6 +119,7 @@ export async function findFreeSlots(staffId, date, durationMinutes) {
   try {
     const openTime   = getConfig('horario_abertura')       || schedule.openTime
     const closeTime  = getConfig('horario_fechamento')     || schedule.closeTime
+    console.log('[debug-findFreeSlots] openTime:', openTime, 'closeTime:', closeTime, 'date:', date, 'durationMinutes:', durationMinutes)
     const lunchStart = getConfig('horario_almoco_inicio')  || schedule.lunchStart
     const lunchEnd   = getConfig('horario_almoco_fim')     || schedule.lunchEnd
 
