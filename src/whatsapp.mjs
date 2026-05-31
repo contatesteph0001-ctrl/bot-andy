@@ -17,7 +17,16 @@ import { log, warn, error as logError } from './logger.mjs'
 import { detectarRespostaConfirmacao, notificarAndy } from './reminders.mjs'
 import { getAgendamentosFuturosCliente, marcarConfirmadoPeloCliente, cancelarAgendamento } from './db.mjs'
 import { deleteEvent } from './calendar.mjs'
-import { panelRouter, SECRET, registrarRotasPublicasPainel } from './panel.mjs'
+import session from 'express-session'
+import {
+  panelRouter,
+  receptionRouter,
+  barbeiroRouter,
+  renderLoginPage,
+  handleLoginPost,
+} from './panel.mjs'
+import { requireAuth, requireRole, redirectPosLogin, currentUser } from './auth.mjs'
+import { getUsuarioPorStaffId } from './db.mjs'
 import { bookingRouter } from './booking.mjs'
 import { registerSender } from './queue.mjs'
 import { temDadoSensivel, sanitizarTexto, tentativaInjection } from './security.mjs'
@@ -31,6 +40,8 @@ const MAX_FOTOS_CONVERSA = 5
 const MAX_AUDIO_SEGUNDOS = 120
 
 function staffNameById(id) {
+  const u = getUsuarioPorStaffId(id)
+  if (u?.nome) return u.nome
   return staff.find(s => s.id === id)?.name || id
 }
 
@@ -147,9 +158,44 @@ export function createExpressApp() {
     next()
   })
   app.use(express.urlencoded({ extended: true }))
+
+  const isProd = process.env.NODE_ENV === 'production'
+  const sessionSecret = process.env.SESSION_SECRET || (isProd ? null : 'dev-session-secret-change-me')
+  if (!sessionSecret) {
+    throw new Error('SESSION_SECRET é obrigatório em produção (NODE_ENV=production)')
+  }
+  app.use(session({
+    secret: sessionSecret,
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: isProd,
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+    },
+    // MemoryStore: deploy/restart desloga todos os usuários
+  }))
+
+  app.get('/login', renderLoginPage)
+  app.post('/login', express.urlencoded({ extended: false }), handleLoginPost)
+  const logoutHandler = (req, res) => {
+    req.session.destroy(() => res.redirect('/login'))
+  }
+  app.get('/logout', logoutHandler)
+  app.post('/logout', logoutHandler)
+
+  app.get('/painel', (req, res) => {
+    const user = currentUser(req)
+    if (!user) return res.redirect('/login')
+    return res.redirect(redirectPosLogin(user.papel))
+  })
+
+  app.use('/admin', requireAuth, requireRole('admin'), panelRouter)
+  app.use('/recepcao', requireAuth, requireRole('recepcao', 'admin'), receptionRouter)
+  app.use('/barbeiro', requireAuth, requireRole('barbeiro'), barbeiroRouter)
+
   app.use(bookingRouter)
-  app.use(`/${SECRET}`, panelRouter)
-  registrarRotasPublicasPainel(app)
 
   return app
 }

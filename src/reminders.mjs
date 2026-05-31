@@ -13,6 +13,7 @@ import {
   marcarNotificadoFila,
   expirarFilaPassada,
   getConfig,
+  getUsuarioPorStaffId,
   getCliente,
   getDb,
   enfileirarMensagem,
@@ -33,6 +34,8 @@ import { processarFilaProativa } from './queue.mjs'
 import { log, warn, error as logError } from './logger.mjs'
 
 function staffNameById(id) {
+  const u = getUsuarioPorStaffId(id)
+  if (u?.nome) return u.nome
   return staff.find(s => s.id === id)?.name || id
 }
 

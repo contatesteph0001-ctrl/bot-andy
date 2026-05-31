@@ -11,7 +11,6 @@ import {
   getAgendamentosAguardandoSinal, aprovarSinal, getAgendamento,
   enfileirarMensagem, getMetricasDiarias,
   getBarbeiros, getBarbeiroById,
-  criarSessaoBarbeiro, getSessaoBarbeiro, deletarSessaoBarbeiro,
   calcularComissaoPeriodo, getFechamentosByBarbeiro,
   updateBarbeiro, getComissaoOverrides, setComissaoOverride,
   criarFechamento, getFechamentosAbertos, registrarPagamentoFechamento,
@@ -20,7 +19,8 @@ import {
   moverAgendamentoKanban, getAgendamentosKanban,
   getOuCriarCaixaDia, definirFundoInicial, registrarPagamentoCaixa,
   estornarPagamentoCaixa, getResumoCaixaDia, fecharCaixaDia,
-  reabrirCaixaDia, listarCaixas, registrarVendaProdutoAvulsa,
+  reabrirCaixaDia,   listarCaixas, registrarVendaProdutoAvulsa,
+  getUsuarioPorUsername, getUsuarioPorStaffId, atualizarSenhaUsuario,
 } from './db.mjs'
 import { deleteEvent, createEvent, findFreeSlots } from './calendar.mjs'
 import { criarAgendamentoTool } from './tools.mjs'
@@ -28,41 +28,11 @@ import { staff, schedule } from './config.mjs'
 import { log } from './logger.mjs'
 import { isoBRT } from './time.mjs'
 import { M } from './messages.mjs'
+import { redirectPosLogin, verificarSenha } from './auth.mjs'
 
 const router = Router()
-const loginRouter = Router()
 const receptionRouter = Router()
 const barbeiroRouter = Router()
-
-/** Nome do cookie HTTP-only da sessão do barbeiro (7 dias, SameSite=Strict). */
-const COOKIE_BARBER_SESSION = 'barber_session'
-const BARBER_COOKIE_MAX_AGE_SEC = 7 * 24 * 60 * 60
-
-// ── Cookies (sem cookie-parser) ───────────────────────────────────
-function getCookie(req, name) {
-  const raw = req.headers.cookie
-  if (!raw) return null
-  const prefix = `${name}=`
-  for (const part of raw.split(';')) {
-    const s = part.trim()
-    if (s.startsWith(prefix)) return decodeURIComponent(s.slice(prefix.length).trim())
-  }
-  return null
-}
-
-function setBarberSessionCookie(res, sessionId) {
-  res.setHeader(
-    'Set-Cookie',
-    `${COOKIE_BARBER_SESSION}=${encodeURIComponent(sessionId)}; Path=/; Max-Age=${BARBER_COOKIE_MAX_AGE_SEC}; HttpOnly; SameSite=Strict`,
-  )
-}
-
-function clearBarberSessionCookie(res) {
-  res.setHeader(
-    'Set-Cookie',
-    `${COOKIE_BARBER_SESSION}=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict`,
-  )
-}
 
 function escapeHtml(str) {
   return String(str ?? '')
@@ -72,45 +42,13 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;')
 }
 
-/**
- * Protege rotas /barbeiro/*: exige sessão válida em sessoes_barbeiro.
- * Preenche req.barbeiro = { id, nome, comissao_padrao_pct, sessionId }.
- */
-function requireBarbeiro(req, res, next) {
-  const sessionId = getCookie(req, COOKIE_BARBER_SESSION)
-  if (!sessionId) {
-    return res.redirect('/painel/login')
-  }
-  const sess = getSessaoBarbeiro(sessionId)
-  if (!sess) {
-    clearBarberSessionCookie(res)
-    return res.redirect('/painel/login')
-  }
-  const b = getBarbeiroById(sess.barbeiro_id)
-  if (!b || !b.ativo) {
-    deletarSessaoBarbeiro(sessionId)
-    clearBarberSessionCookie(res)
-    return res.redirect('/painel/login')
-  }
-  req.barbeiro = {
-    id: b.id,
-    nome: b.nome,
-    comissao_padrao_pct: b.comissao_padrao_pct,
-    sessionId,
-  }
-  next()
-}
-
-barbeiroRouter.use(requireBarbeiro)
-
-const SECRET           = process.env.PANEL_SECRET    || 'painel-andy-regua-2024'
-const RECEPTION_SECRET = process.env.RECEPTION_SECRET || 'recepcao-andy-regua-2024'
 const ESTOQUE_MINIMO_PADRAO = 3
 
-function getRole(secret) {
-  if (secret === SECRET) return 'admin'
-  if (secret === RECEPTION_SECRET) return 'reception'
-  return null
+/** Nome do barbeiro: usuarios (fonte única) → fallback config.mjs */
+function staffNameById(id) {
+  const u = getUsuarioPorStaffId(id)
+  if (u?.nome) return u.nome
+  return staff.find(s => s.id === id)?.name || id
 }
 
 // Garante tabela de histórico de estoque
@@ -130,8 +68,6 @@ try {
 } catch (e) { /* tabela já existe */ }
 
 // ── Helpers ───────────────────────────────────────────────────────
-function staffNameById(id) { return staff.find(s => s.id === id)?.name || id }
-
 function formatHora(iso) {
   if (!iso) return '—'
   return new Date(iso).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' })
@@ -752,14 +688,15 @@ function isSidebarNavActive(page, navId) {
   return page === navId || page.startsWith(`${navId}/`)
 }
 
-function navItemHtml(secret, page, item) {
+function navItemHtml(panelPrefix, page, item) {
   const active = isSidebarNavActive(page, item.id) ? 'active' : ''
-  return `<a href="/${secret}/${item.id}" class="nav-item ${active}">${item.icon}<span>${item.label}</span></a>`
+  return `<a href="/${panelPrefix}/${item.id}" class="nav-item ${active}">${item.icon}<span>${item.label}</span></a>`
 }
 
-function shell(page, title, subtitle, body, script = '', secret = SECRET) {
-  const isReception = secret === RECEPTION_SECRET
+function shell(page, title, subtitle, body, script = '', panelPrefix = 'admin') {
+  const isReception = panelPrefix === 'recepcao'
   const navPrincipal = [
+    { id:'kanban',                 label:'Atendimentos', icon:ic.chart },
     { id:'agenda',                 label:'Agenda',       icon:ic.cal },
     { id:'agenda/agendar-manual',  label:'Ag. Manual',   icon:ic.plus },
     { id:'faturamento',            label:'Faturamento',  icon:ic.money },
@@ -786,12 +723,12 @@ function shell(page, title, subtitle, body, script = '', secret = SECRET) {
 
   let navHtml = ''
   if (isReception) {
-    navHtml += `<div class="nav-label">Menu</div>${navReception.map((n) => navItemHtml(secret, page, n)).join('')}`
+    navHtml += `<div class="nav-label">Menu</div>${navReception.map((n) => navItemHtml(panelPrefix, page, n)).join('')}`
   }
   else {
-    navHtml += `<div class="nav-label">Menu</div>${navPrincipal.map((n) => navItemHtml(secret, page, n)).join('')}`
+    navHtml += `<div class="nav-label">Menu</div>${navPrincipal.map((n) => navItemHtml(panelPrefix, page, n)).join('')}`
     navHtml += `<div class="nav-label nav-label-finance">${ic.chart} Financeiro</div>`
-    navHtml += navFinanceiro.map((n) => navItemHtml(secret, page, n)).join('')
+    navHtml += navFinanceiro.map((n) => navItemHtml(panelPrefix, page, n)).join('')
   }
 
   const hora = new Date().toLocaleTimeString('pt-BR', { hour:'2-digit', minute:'2-digit', timeZone:'America/Sao_Paulo' })
@@ -818,6 +755,7 @@ function shell(page, title, subtitle, body, script = '', secret = SECRET) {
       <div class="sidebar-footer">
         <div class="pulse"></div>
         Online · ${hora} · ${dataHoje}
+        <a href="/logout" style="display:block;margin-top:.5rem;color:var(--muted);font-size:.72rem">Sair</a>
       </div>
     </div>
   </aside>
@@ -1412,8 +1350,8 @@ ${script}
 </body></html>`
 }
 
-// ── LOGIN ROUTER ───────────────────────────────────────────────────
-loginRouter.get('/login', (req, res) => {
+// ── LOGIN (montado em /login no app Express) ───────────────────────
+export function renderLoginPage(req, res) {
   const erro = req.query.erro || ''
   res.send(`<!DOCTYPE html>
 <html lang="pt-BR">
@@ -1435,16 +1373,16 @@ body{display:flex;align-items:center;justify-content:center;min-height:100vh;bac
   <div class="login-logo"><img src="/logo.png" alt="Andy Na Régua"></div>
   <div class="login-title">Painel de Controle</div>
   <div class="login-sub">Andy Na Régua Barbearia</div>
-  ${erro ? `<div class="alert alert-error" style="margin-bottom:1rem">${ic.warn} Credenciais incorretas</div>` : ''}
-  <form method="POST" action="/painel/login">
+  ${erro ? `<div class="alert alert-error" style="margin-bottom:1rem">${ic.warn} Usuário ou senha incorretos</div>` : ''}
+  <form method="POST" action="/login">
     <div class="form-group">
-      <label class="form-label">Seu nome</label>
-      <input type="text" name="nome" autocomplete="name" placeholder="Barbeiro 1">
-      <div class="form-hint" style="font-size:.68rem;margin-top:.35rem">Admin e recepção: deixe em branco. Barbeiros: obrigatório.</div>
+      <label class="form-label">Usuário</label>
+      <input type="text" name="usuario" autocomplete="username" placeholder="andy, recepcao, barbeiro1…" required autofocus>
+      <div class="form-hint" style="font-size:.68rem;margin-top:.35rem">Use o login fixo (ex: barbeiro1), não o nome de exibição.</div>
     </div>
     <div class="form-group">
-      <label class="form-label">Senha de acesso</label>
-      <input type="password" name="senha" placeholder="••••••••" required autofocus>
+      <label class="form-label">Senha</label>
+      <input type="password" name="senha" placeholder="••••••••" required autocomplete="current-password">
     </div>
     <button type="submit" class="btn btn-primary" style="width:100%;margin-top:1rem;min-height:44px;justify-content:center">
       ${ic.check} Entrar
@@ -1452,40 +1390,53 @@ body{display:flex;align-items:center;justify-content:center;min-height:100vh;bac
   </form>
 </div>
 </body></html>`)
-})
+}
 
-loginRouter.post('/login', express.urlencoded({ extended: false }), (req, res) => {
-  const nomeRaw = String(req.body?.nome || '').trim()
+export function handleLoginPost(req, res) {
+  const username = String(req.body?.usuario || '').trim().toLowerCase()
   const senha = req.body?.senha
+  if (!username || !senha) return res.redirect('/login?erro=1')
 
-  const role = getRole(senha)
-  // Admin e recepção: apenas senha fixa (nome ignorado), fluxo inalterado.
-  if (role === 'admin') return res.redirect(`/${SECRET}/agenda`)
-  if (role === 'reception') return res.redirect(`/${RECEPTION_SECRET}/agenda`)
-
-  // Barbeiro: nome + senha (bcrypt na tabela barbeiros)
-  if (!nomeRaw || !senha) return res.redirect('/painel/login?erro=1')
-  const barbeiro = getBarbeiros().find(
-    (b) => b.nome && b.nome.toLowerCase() === nomeRaw.toLowerCase(),
-  )
-  if (!barbeiro || !barbeiro.senha_hash || !bcrypt.compareSync(senha, barbeiro.senha_hash)) {
-    return res.redirect('/painel/login?erro=1')
+  const usuario = getUsuarioPorUsername(username)
+  if (!usuario || !verificarSenha(senha, usuario.senha_hash)) {
+    return res.redirect('/login?erro=1')
   }
 
-  const { id: sessionId } = criarSessaoBarbeiro(barbeiro.id)
-  setBarberSessionCookie(res, sessionId)
-  return res.redirect('/barbeiro/inicio')
-})
+  req.session.user = {
+    id: usuario.id,
+    username: usuario.username,
+    papel: usuario.papel,
+    staff_id: usuario.staff_id || null,
+    nome: usuario.nome || usuario.username,
+  }
+  return res.redirect(redirectPosLogin(usuario.papel))
+}
+
+/** Preenche req.barbeiro a partir da sessão (staff_id = barbeiro1/2/3). */
+export function attachBarbeiroUser(req, res, next) {
+  const u = req.session?.user
+  if (!u?.staff_id) return res.redirect('/login')
+  const fin = getBarbeiroById(u.staff_id)
+  req.barbeiro = {
+    id: u.staff_id,
+    nome: u.nome || fin?.nome || u.username,
+    username: u.username,
+    comissao_padrao_pct: fin?.comissao_padrao_pct ?? 0,
+  }
+  next()
+}
 
 // ═══════════════════════════════════════════════════════════════
 // ROTA: /agenda
 // ═══════════════════════════════════════════════════════════════
-function agendaHandler(secret) {
+function agendaHandler(panelPrefix) {
   return (req, res) => {
     const data        = req.query.data || hojeStr()
-    const staffFilter = req.query.barbeiro || ''
+    const staffFilter = panelPrefix === 'barbeiro'
+      ? (req.session?.user?.staff_id || null)
+      : (req.query.barbeiro || '')
     const msg         = req.query.msg || ''
-    const isRecepcao  = secret === RECEPTION_SECRET
+    const isRecepcao  = panelPrefix === 'recepcao'
     const ags         = getAgendamentosDia(data, staffFilter || null)
     const fat         = getFaturamentoDia(data)
 
@@ -1494,7 +1445,7 @@ function agendaHandler(secret) {
     })
 
     const staffOpts = staff.map(s =>
-      `<option value="${s.id}" ${staffFilter===s.id?'selected':''}>${s.name}</option>`
+      `<option value="${s.id}" ${staffFilter===s.id?'selected':''}>${staffNameById(s.id)}</option>`
     ).join('')
 
     const renderAgendaCard = (ag, data) => {
@@ -1523,8 +1474,8 @@ function agendaHandler(secret) {
           ${badge(ag.status)}
           <div class="agenda-price${ag.status==='cancelado' ? ' cancelled' : ''}">R$ ${preco.toFixed(2)}</div>
           ${ag.status==='confirmado'?`
-          <a href="/${secret}/agenda/editar/${ag.id}?data=${encodeURIComponent(data)}" class="btn btn-ghost btn-sm" title="Editar">${ic.gear}</a>
-          <form method="POST" action="/${secret}/agenda/cancelar">
+          <a href="/${panelPrefix}/agenda/editar/${ag.id}?data=${encodeURIComponent(data)}" class="btn btn-ghost btn-sm" title="Editar">${ic.gear}</a>
+          <form method="POST" action="/${panelPrefix}/agenda/cancelar">
             <input type="hidden" name="id" value="${ag.id}">
             <input type="hidden" name="data" value="${data}">
             <button class="btn btn-danger btn-sm" type="submit" onclick="return confirm('Cancelar agendamento de ${ag.nome_cliente||'cliente'}?')">
@@ -1536,13 +1487,13 @@ function agendaHandler(secret) {
           isRecepcao && ag.status === 'confirmado'
             ? `
         <div class="agenda-presenca-row" style="grid-column:1/-1;display:flex;gap:.5rem">
-          <form method="POST" action="/${secret}/agenda/presenca/${ag.id}" style="flex:1">
+          <form method="POST" action="/${panelPrefix}/agenda/presenca/${ag.id}" style="flex:1">
             <input type="hidden" name="data" value="${escapeHtml(data)}">
             <button type="submit" class="btn btn-primary btn-sm" style="width:100%;background:var(--green);border-color:var(--green)">
               ✓ Chegou
             </button>
           </form>
-          <form method="POST" action="/${secret}/agenda/no-show/${ag.id}" style="flex:1">
+          <form method="POST" action="/${panelPrefix}/agenda/no-show/${ag.id}" style="flex:1">
             <input type="hidden" name="data" value="${escapeHtml(data)}">
             <button type="submit" class="btn btn-sm" style="width:100%;background:var(--red-sem-dim);color:var(--red-sem);border:1px solid rgba(239,68,68,.3)">
               ✗ Não veio
@@ -1623,8 +1574,8 @@ function agendaHandler(secret) {
         </select>
       </div>
       <button class="btn btn-ghost" onclick="filtrar()">Filtrar</button>
-      <a href="/${secret}/agenda/bloquear?data=${data}" class="btn btn-ghost">${ic.lock} Bloquear horário</a>
-      <a href="/${secret}/agenda/agendar-manual?data=${data}" class="btn btn-primary">${ic.plus} Novo agendamento</a>
+      <a href="/${panelPrefix}/agenda/bloquear?data=${data}" class="btn btn-ghost">${ic.lock} Bloquear horário</a>
+      <a href="/${panelPrefix}/agenda/agendar-manual?data=${data}" class="btn btn-primary">${ic.plus} Novo agendamento</a>
     </div>
 
     <div class="section-header">
@@ -1638,18 +1589,18 @@ function agendaHandler(secret) {
       function filtrar(){
         const d=document.getElementById('dataInput').value
         const b=document.getElementById('barbeiroInput').value
-        window.location.href='/${secret}/agenda?data='+d+(b?'&barbeiro='+b:'')
+        window.location.href='/${panelPrefix}/agenda?data='+d+(b?'&barbeiro='+b:'')
       }
       document.getElementById('dataInput').addEventListener('keydown',e=>{if(e.key==='Enter')filtrar()})
       setTimeout(()=>location.reload(),90000)
     `
 
-    res.send(shell('agenda', 'Agenda', dataLabel, body, script, secret))
+    res.send(shell('agenda', 'Agenda', dataLabel, body, script, panelPrefix))
   }
 }
 
-router.get('/agenda', agendaHandler(SECRET))
-receptionRouter.get('/agenda', agendaHandler(RECEPTION_SECRET))
+router.get('/agenda', agendaHandler('admin'))
+receptionRouter.get('/agenda', agendaHandler('recepcao'))
 
 function cancelarHandler(secret) {
   return async (req, res) => {
@@ -1666,8 +1617,8 @@ function cancelarHandler(secret) {
   }
 }
 
-router.post('/agenda/cancelar', cancelarHandler(SECRET))
-receptionRouter.post('/agenda/cancelar', cancelarHandler(RECEPTION_SECRET))
+router.post('/agenda/cancelar', cancelarHandler('admin'))
+receptionRouter.post('/agenda/cancelar', cancelarHandler('recepcao'))
 
 function editarAgendaGetHandler(secret) {
   return (req, res) => {
@@ -1799,17 +1750,17 @@ function editarAgendaPostHandler(secret) {
   }
 }
 
-router.get('/agenda/editar/:id', editarAgendaGetHandler(SECRET))
-router.post('/agenda/editar/:id', editarAgendaPostHandler(SECRET))
-receptionRouter.get('/agenda/editar/:id', editarAgendaGetHandler(RECEPTION_SECRET))
-receptionRouter.post('/agenda/editar/:id', editarAgendaPostHandler(RECEPTION_SECRET))
+router.get('/agenda/editar/:id', editarAgendaGetHandler('admin'))
+router.post('/agenda/editar/:id', editarAgendaPostHandler('admin'))
+receptionRouter.get('/agenda/editar/:id', editarAgendaGetHandler('recepcao'))
+receptionRouter.post('/agenda/editar/:id', editarAgendaPostHandler('recepcao'))
 
 receptionRouter.post('/agenda/presenca/:id', express.urlencoded({ extended: false }), (req, res) => {
   const id = Number(req.params.id)
   const data = req.body.data || hojeStr()
   confirmarPresenca(id)
   log(`Recepção: presença confirmada — agendamento #${id}`)
-  res.redirect(`/${RECEPTION_SECRET}/agenda?data=${encodeURIComponent(data)}&msg=presenca_ok`)
+  res.redirect(`/recepcao/agenda?data=${encodeURIComponent(data)}&msg=presenca_ok`)
 })
 
 receptionRouter.post('/agenda/no-show/:id', express.urlencoded({ extended: false }), (req, res) => {
@@ -1817,7 +1768,7 @@ receptionRouter.post('/agenda/no-show/:id', express.urlencoded({ extended: false
   const data = req.body.data || hojeStr()
   marcarNaoCompareceu(id)
   log(`Recepção: no-show — agendamento #${id}`)
-  res.redirect(`/${RECEPTION_SECRET}/agenda?data=${encodeURIComponent(data)}&msg=noshow_ok`)
+  res.redirect(`/recepcao/agenda?data=${encodeURIComponent(data)}&msg=noshow_ok`)
 })
 
 receptionRouter.get('/despesas', (req, res) => {
@@ -1862,14 +1813,14 @@ receptionRouter.get('/despesas', (req, res) => {
   const optsCatNova = CATEGORIAS_DESPESA.map((c) => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('')
 
   const body = `
-  <a href="/${RECEPTION_SECRET}/agenda" class="btn btn-ghost btn-sm" style="margin-bottom:1rem;display:inline-flex">${ic.back} Voltar à agenda</a>
+  <a href="/recepcao/agenda" class="btn btn-ghost btn-sm" style="margin-bottom:1rem;display:inline-flex">${ic.back} Voltar à agenda</a>
   ${alert}
   <p class="form-hint" style="margin-bottom:1rem">${ic.cal} Período padrão: semana corrente (segunda a domingo, até hoje). Ajuste as datas para ver outro intervalo.</p>
   <div class="toolbar" style="flex-wrap:wrap;margin-bottom:1rem">
     <div class="toolbar-group"><span class="toolbar-label">De</span><input type="date" lang="pt-BR" name="de" form="filtDespRec" value="${escapeHtml(de)}"></div>
     <div class="toolbar-group"><span class="toolbar-label">Até</span><input type="date" lang="pt-BR" name="ate" form="filtDespRec" value="${escapeHtml(ate)}"></div>
     <div class="toolbar-group"><span class="toolbar-label">Categoria</span><select name="cat" form="filtDespRec">${optsCat}</select></div>
-    <form id="filtDespRec" method="GET" action="/${RECEPTION_SECRET}/despesas"><button type="submit" class="btn btn-primary btn-sm">${ic.cal} Filtrar</button></form>
+    <form id="filtDespRec" method="GET" action="/recepcao/despesas"><button type="submit" class="btn btn-primary btn-sm">${ic.cal} Filtrar</button></form>
   </div>
 
   <div class="stats" style="margin-bottom:1rem">
@@ -1878,7 +1829,7 @@ receptionRouter.get('/despesas', (req, res) => {
 
   <div class="section-header"><span class="section-title">${ic.plus} Nova despesa</span></div>
   <div class="form-card" style="max-width:640px;margin-bottom:1.25rem">
-    <form method="POST" action="/${RECEPTION_SECRET}/despesas/criar" class="form-row" style="flex-wrap:wrap;gap:.75rem;align-items:flex-end">
+    <form method="POST" action="/recepcao/despesas/criar" class="form-row" style="flex-wrap:wrap;gap:.75rem;align-items:flex-end">
       <div class="form-group" style="margin:0;flex:2;min-width:160px"><label class="form-label">Descrição</label><input type="text" name="descricao" required placeholder="Ex.: Compra de material"></div>
       <div class="form-group" style="margin:0;width:120px"><label class="form-label">Valor</label><input type="text" inputmode="decimal" name="valor" required placeholder="150,00"></div>
       <div class="form-group" style="margin:0"><label class="form-label">Categoria</label><select name="categoria">${optsCatNova}</select></div>
@@ -1897,7 +1848,7 @@ receptionRouter.get('/despesas', (req, res) => {
   </div>
   `
 
-  res.send(shell('despesas', 'Despesas', 'Registro de saídas (recepção)', body, '', RECEPTION_SECRET))
+  res.send(shell('despesas', 'Despesas', 'Registro de saídas (recepção)', body, '', 'recepcao'))
 })
 
 receptionRouter.post('/despesas/criar', express.urlencoded({ extended: false }), (req, res) => {
@@ -1907,7 +1858,7 @@ receptionRouter.post('/despesas/criar', express.urlencoded({ extended: false }),
   const valor = Number.parseFloat(valorRaw)
   const categoria = req.body.categoria || 'outros'
   if (!descricao?.trim() || !data || !/^\d{4}-\d{2}-\d{2}$/.test(data) || Number.isNaN(valor)) {
-    return res.redirect(`/${RECEPTION_SECRET}/despesas?msg=err`)
+    return res.redirect(`/recepcao/despesas?msg=err`)
   }
   criarDespesa({
     descricao: descricao.trim(),
@@ -1918,7 +1869,7 @@ receptionRouter.post('/despesas/criar', express.urlencoded({ extended: false }),
     obs: obs?.trim() ? obs.trim() : null,
   })
   log(`Recepção: despesa "${descricao}" ${valor}`)
-  res.redirect(`/${RECEPTION_SECRET}/despesas?msg=ok`)
+  res.redirect(`/recepcao/despesas?msg=ok`)
 })
 
 // ═══════════════════════════════════════════════════════════════
@@ -2028,13 +1979,13 @@ receptionRouter.post('/caixa/estornar/:id', (req, res) => {
 
 receptionRouter.post('/caixa/definir-fundo', express.urlencoded({ extended: false }), (req, res) => {
   definirFundoInicial(hojeStr(), Number(req.body?.valor) || 0)
-  res.redirect(`/${RECEPTION_SECRET}/caixa`)
+  res.redirect(`/recepcao/caixa`)
 })
 
 receptionRouter.post('/caixa/fechar', express.urlencoded({ extended: false }), (req, res) => {
   const hoje = req.body.data || hojeStr()  // permite fechar caixa retroativo
   const resultado = fecharCaixaDia(hoje, 'recepcao')
-  if (resultado.erro) return res.redirect(`/${RECEPTION_SECRET}/caixa?msg=pendentes`)
+  if (resultado.erro) return res.redirect(`/recepcao/caixa?msg=pendentes`)
 
   try {
     const andyPhone = getConfig('andy_phone') || ''
@@ -2065,13 +2016,13 @@ receptionRouter.post('/caixa/fechar', express.urlencoded({ extended: false }), (
   } catch (e) { log('Erro ao enviar WhatsApp fechamento:', e.message) }
 
   log(`Caixa: fechado — ${hoje}`)
-  res.redirect(`/${RECEPTION_SECRET}/caixa?msg=fechado`)
+  res.redirect(`/recepcao/caixa?msg=fechado`)
 })
 
 receptionRouter.post('/caixa/reabrir', express.urlencoded({ extended: false }), (req, res) => {
   reabrirCaixaDia(hojeStr())
   log(`Caixa: reaberto — ${hojeStr()}`)
-  res.redirect(`/${RECEPTION_SECRET}/caixa?msg=reaberto`)
+  res.redirect(`/recepcao/caixa?msg=reaberto`)
 })
 
 receptionRouter.get('/caixa', (req, res) => {
@@ -2094,7 +2045,7 @@ receptionRouter.get('/caixa', (req, res) => {
           <td>${escapeHtml(p.barbeiro_nome || p.staff_id)}</td>
           <td style="font-size:.75rem;color:#aaa">${escapeHtml(formasStr)}</td>
           <td style="color:var(--green);font-weight:600">${fmtBRL(p.valor_servico)}</td>
-          <td><button class="btn btn-danger btn-sm" onclick="if(confirm('Estornar este pagamento? Isso será registrado no relatório.'))fetch('/${RECEPTION_SECRET}/caixa/estornar/${p.id}',{method:'POST'}).then(()=>location.reload())">Estornar</button></td>
+          <td><button class="btn btn-danger btn-sm" onclick="if(confirm('Estornar este pagamento? Isso será registrado no relatório.'))fetch('/recepcao/caixa/estornar/${p.id}',{method:'POST'}).then(()=>location.reload())">Estornar</button></td>
         </tr>`
       }).join('')
     : `<tr><td colspan="7"><div class="empty"><div class="empty-text">Nenhum pagamento registrado hoje</div></div></td></tr>`
@@ -2144,10 +2095,10 @@ receptionRouter.get('/caixa', (req, res) => {
     <div style="display:flex;align-items:center;gap:.5rem">
       <span class="toolbar-label" style="font-size:.75rem;color:var(--muted)">Data do caixa:</span>
       <input type="date" lang="pt-BR" id="caixaDataNav" value="${data}" style="padding:5px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text1);font-size:.8rem"
-        onchange="window.location.href='/${RECEPTION_SECRET}/caixa?data='+this.value">
+        onchange="window.location.href='/recepcao/caixa?data='+this.value">
     </div>
     ${data !== hojeStr() ? `<span style="font-size:.72rem;background:rgba(245,158,11,.15);color:var(--amber);padding:.2rem .65rem;border-radius:20px;border:1px solid rgba(245,158,11,.3)">${ic.warn} Caixa retroativo — ${dataLabel}</span>` : ''}
-    <a href="/${RECEPTION_SECRET}/caixa/historico" class="btn btn-ghost btn-sm" style="margin-left:auto;font-size:.75rem">${ic.list || '📋'} Histórico de caixas</a>
+    <a href="/recepcao/caixa/historico" class="btn btn-ghost btn-sm" style="margin-left:auto;font-size:.75rem">${ic.list || '📋'} Histórico de caixas</a>
   </div>
   ${msg === 'fechado' ? `<div class="alert alert-success">${ic.check} Caixa fechado! Relatório enviado para o Andy.</div>` : ''}
   ${msg === 'reaberto' ? `<div class="alert alert-success">${ic.check} Caixa reaberto.</div>` : ''}
@@ -2183,7 +2134,7 @@ receptionRouter.get('/caixa', (req, res) => {
       <div class="config-meta"><div class="key">Fundo inicial</div><div class="desc">Não entra no faturamento</div></div>
       <div style="display:flex;align-items:center;gap:.5rem">
         <span style="font-weight:600;color:var(--amber)">${fmtBRL(caixa.fundo_inicial)}</span>
-        ${caixa.status === 'aberto' ? `<form method="POST" action="/${RECEPTION_SECRET}/caixa/definir-fundo" style="display:flex;gap:.35rem;align-items:center"><input type="number" name="valor" min="0" step="0.01" placeholder="0,00" style="width:90px;padding:.35rem .5rem;font-size:.82rem"><button class="btn btn-ghost btn-sm" type="submit">Atualizar</button></form>` : ''}
+        ${caixa.status === 'aberto' ? `<form method="POST" action="/recepcao/caixa/definir-fundo" style="display:flex;gap:.35rem;align-items:center"><input type="number" name="valor" min="0" step="0.01" placeholder="0,00" style="width:90px;padding:.35rem .5rem;font-size:.82rem"><button class="btn btn-ghost btn-sm" type="submit">Atualizar</button></form>` : ''}
       </div>
     </div>
     <div class="config-row" style="padding:.65rem 0">
@@ -2193,9 +2144,9 @@ receptionRouter.get('/caixa', (req, res) => {
   </div>
   <div style="display:flex;gap:.75rem;flex-wrap:wrap">
     ${caixa.status === 'aberto'
-      ? `<form method="POST" action="/${RECEPTION_SECRET}/caixa/fechar"><input type="hidden" name="data" value="${data}"><button type="submit" class="btn btn-primary" onclick="return confirm('Fechar caixa de ' + '${dataLabel}' + '? Relatório será enviado para o Andy.')">${ic.check} ${data === hojeStr() ? 'Fechar caixa do dia' : 'Fechar caixa retroativo'}</button></form>`
-      : `<form method="POST" action="/${RECEPTION_SECRET}/caixa/reabrir"><button type="submit" class="btn btn-ghost" onclick="return confirm('Reabrir o caixa?')">Reabrir caixa</button></form>`}
-    <a href="/${RECEPTION_SECRET}/caixa/historico" class="btn btn-ghost">${ic.cal} Histórico</a>
+      ? `<form method="POST" action="/recepcao/caixa/fechar"><input type="hidden" name="data" value="${data}"><button type="submit" class="btn btn-primary" onclick="return confirm('Fechar caixa de ' + '${dataLabel}' + '? Relatório será enviado para o Andy.')">${ic.check} ${data === hojeStr() ? 'Fechar caixa do dia' : 'Fechar caixa retroativo'}</button></form>`
+      : `<form method="POST" action="/recepcao/caixa/reabrir"><button type="submit" class="btn btn-ghost" onclick="return confirm('Reabrir o caixa?')">Reabrir caixa</button></form>`}
+    <a href="/recepcao/caixa/historico" class="btn btn-ghost">${ic.cal} Histórico</a>
   </div>`
 
 
@@ -2207,7 +2158,7 @@ receptionRouter.get('/caixa', (req, res) => {
       btn.disabled = true
       btn.textContent = 'Salvando...'
       try {
-        const r = await fetch('/${RECEPTION_SECRET}/caixa/pagar-atendimento', {
+        const r = await fetch('/recepcao/caixa/pagar-atendimento', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -2223,7 +2174,7 @@ receptionRouter.get('/caixa', (req, res) => {
       } catch(err) { alert('Falha ao registrar'); btn.disabled = false; btn.textContent = 'Registrar' }
     }
   `
-  res.send(shell('caixa', 'Caixa do Dia', dataLabel, body, script, RECEPTION_SECRET))
+  res.send(shell('caixa', 'Caixa do Dia', dataLabel, body, script, 'recepcao'))
 })
 
 receptionRouter.get('/caixa/historico', (req, res) => {
@@ -2235,7 +2186,7 @@ receptionRouter.get('/caixa/historico', (req, res) => {
     ? caixas.map(c => {
         const r = getResumoCaixaDia(c.data)
         return `<tr>
-          <td><a href="/${RECEPTION_SECRET}/caixa?data=${encodeURIComponent(c.data)}" style="color:var(--blue-l)">${escapeHtml(c.data)}</a></td>
+          <td><a href="/recepcao/caixa?data=${encodeURIComponent(c.data)}" style="color:var(--blue-l)">${escapeHtml(c.data)}</a></td>
           <td style="color:var(--green);font-weight:600">${fmtBRL(r.totalBruto)}</td>
           <td style="color:var(--amber)">${fmtBRL(r.totalDespesas)}</td>
           <td style="color:${r.saldoLiquido>=0?'var(--green)':'var(--red-sem)'};font-weight:600">${fmtBRL(r.saldoLiquido)}</td>
@@ -2258,8 +2209,8 @@ receptionRouter.get('/caixa/historico', (req, res) => {
     </table>
   </div>`
 
-  const script = `function filtrar(){ window.location.href='/${RECEPTION_SECRET}/caixa/historico?de='+document.getElementById('histDe').value+'&ate='+document.getElementById('histAte').value }`
-  res.send(shell('caixa', 'Histórico de Caixas', `${de} a ${ate}`, body, script, RECEPTION_SECRET))
+  const script = `function filtrar(){ window.location.href='/recepcao/caixa/historico?de='+document.getElementById('histDe').value+'&ate='+document.getElementById('histAte').value }`
+  res.send(shell('caixa', 'Histórico de Caixas', `${de} a ${ate}`, body, script, 'recepcao'))
 })
 
 // ── Bloquear horário ─────────────────────────────────────────────
@@ -2325,10 +2276,10 @@ function bloquearPostHandler(secret) {
   }
 }
 
-router.get('/agenda/bloquear',  bloquearGetHandler(SECRET))
-router.post('/agenda/bloquear', bloquearPostHandler(SECRET))
-receptionRouter.get('/agenda/bloquear',  bloquearGetHandler(RECEPTION_SECRET))
-receptionRouter.post('/agenda/bloquear', bloquearPostHandler(RECEPTION_SECRET))
+router.get('/agenda/bloquear',  bloquearGetHandler('admin'))
+router.post('/agenda/bloquear', bloquearPostHandler('admin'))
+receptionRouter.get('/agenda/bloquear',  bloquearGetHandler('recepcao'))
+receptionRouter.post('/agenda/bloquear', bloquearPostHandler('recepcao'))
 
 // ── Agendamento Manual ───────────────────────────────────────────
 function agendarManualGetHandler(secret) {
@@ -2426,10 +2377,10 @@ function agendarManualPostHandler(secret) {
   }
 }
 
-router.get('/agenda/agendar-manual',  agendarManualGetHandler(SECRET))
-router.post('/agenda/agendar-manual', agendarManualPostHandler(SECRET))
-receptionRouter.get('/agenda/agendar-manual',  agendarManualGetHandler(RECEPTION_SECRET))
-receptionRouter.post('/agenda/agendar-manual', agendarManualPostHandler(RECEPTION_SECRET))
+router.get('/agenda/agendar-manual',  agendarManualGetHandler('admin'))
+router.post('/agenda/agendar-manual', agendarManualPostHandler('admin'))
+receptionRouter.get('/agenda/agendar-manual',  agendarManualGetHandler('recepcao'))
+receptionRouter.post('/agenda/agendar-manual', agendarManualPostHandler('recepcao'))
 
 // ── Kanban recepção ──────────────────────────────────────────────
 const KANBAN_COLS = [
@@ -2631,7 +2582,8 @@ function calcularTotaisKanban(ags) {
   }
 }
 
-receptionRouter.get('/kanban', (req, res) => {
+function renderKanbanPage(req, res) {
+  const panelPrefix = req.panelPrefix || 'recepcao'
   const data = req.query.data || hojeStr()
   const ags = getAgendamentosKanban(data)
   const servicos = getServicosAtivos()
@@ -2859,9 +2811,8 @@ receptionRouter.get('/kanban', (req, res) => {
 
   const script = `
   window.__PRODUTOS__ = ${JSON.stringify(produtosEstoque.map(p => ({ id: p.id, nome: p.nome, preco: p.preco })))};
-  const RECEPTION_SECRET = '${RECEPTION_SECRET}';
-  const KB_SECRET = ${JSON.stringify(RECEPTION_SECRET)};
-  const KB_STAFF_NAMES = ${JSON.stringify(Object.fromEntries(staff.filter(s => s.active).map(s => [s.id, s.name])))};
+  const PANEL_PREFIX = ${JSON.stringify(panelPrefix)};
+  const KB_STAFF_NAMES = ${JSON.stringify(Object.fromEntries(staff.filter(s => s.active).map(s => [s.id, staffNameById(s.id)])))};
   const MOVIMENTOS = {
     confirmado: ['chegou','nao_compareceu','cancelado'],
     chegou: ['em_atendimento','nao_compareceu','cancelado'],
@@ -3169,7 +3120,7 @@ receptionRouter.get('/kanban', (req, res) => {
 
     document.getElementById('payConfirmBtn').disabled = true
     try {
-      const resp = await fetch('/' + RECEPTION_SECRET + '/caixa/pagar-atendimento', {
+      const resp = await fetch('/' + PANEL_PREFIX + '/caixa/pagar-atendimento', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ agendamento_id: _payAgendamentoId, pagamento_itens: pagamentoItens, valor_recebido_dinheiro: valorRecebidoDinheiro, troco, produtos_vendidos: produtosVendidos }),
@@ -3194,7 +3145,7 @@ receptionRouter.get('/kanban', (req, res) => {
   function closeFundoModal() { document.getElementById('fundoOverlay').classList.remove('open') }
   async function confirmarFundo() {
     const val = parseFloat(document.getElementById('fundoValor').value) || 0
-    await fetch('/' + RECEPTION_SECRET + '/caixa/fundo-inicial', {
+    await fetch('/' + PANEL_PREFIX + '/caixa/fundo-inicial', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ valor: val }),
     })
@@ -3284,7 +3235,7 @@ receptionRouter.get('/kanban', (req, res) => {
     const troco = Math.max(0, recebido - parcelaDinheiro)
 
     try {
-      const resp = await fetch('/' + RECEPTION_SECRET + '/caixa/venda-produto-avulsa', {
+      const resp = await fetch('/' + PANEL_PREFIX + '/caixa/venda-produto-avulsa', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ produto_id: prodId, quantidade: qtd, staff_id: staffId, pagamento_itens: pagamentoItens, valor_recebido_dinheiro: recebido, troco }),
       })
@@ -3444,7 +3395,7 @@ receptionRouter.get('/kanban', (req, res) => {
       atualizarTimers();
     }
     try {
-      const r = await fetch('/'+KB_SECRET+'/kanban/mover', {
+      const r = await fetch('/' + PANEL_PREFIX + '/kanban/mover', {
         method:'POST',
         headers:{'Content-Type':'application/x-www-form-urlencoded'},
         body:'id='+encodeURIComponent(id)+'&novo_status='+encodeURIComponent(dest)
@@ -3500,7 +3451,7 @@ receptionRouter.get('/kanban', (req, res) => {
       atualizarTimers();
     }
     try {
-      const r = await fetch('/'+KB_SECRET+'/kanban/mover', {
+      const r = await fetch('/' + PANEL_PREFIX + '/kanban/mover', {
         method:'POST',
         headers:{'Content-Type':'application/x-www-form-urlencoded'},
         body:'id='+encodeURIComponent(id)+'&novo_status='+encodeURIComponent(novoStatus)
@@ -3531,11 +3482,11 @@ receptionRouter.get('/kanban', (req, res) => {
   setInterval(atualizarTimers, 60000);
   const dataAtual = () => document.getElementById('kbData').value;
   document.getElementById('kbData').addEventListener('change', () => {
-    window.location.href = '/'+KB_SECRET+'/kanban?data=' + dataAtual();
+    window.location.href = '/' + PANEL_PREFIX + '/kanban?data=' + dataAtual();
   });
   setInterval(async () => {
     try {
-      const r = await fetch('/'+KB_SECRET+'/kanban/dados?data=' + dataAtual());
+      const r = await fetch('/' + PANEL_PREFIX + '/kanban/dados?data=' + dataAtual());
       const { agendamentos } = await r.json();
       agendamentos.sort((a, b) => new Date(b.data_hora_inicio) - new Date(a.data_hora_inicio))
       const ids = new Set(agendamentos.map(a => String(a.id)));
@@ -3591,7 +3542,7 @@ receptionRouter.get('/kanban', (req, res) => {
     const sel = document.getElementById('mHorario');
     sel.disabled = true;
     sel.innerHTML = '<option>Carregando...</option>';
-    const r = await fetch('/'+KB_SECRET+'/kanban/slots?staff_id='+encodeURIComponent(staffId)+'&data='+encodeURIComponent(data)+'&servico_id='+encodeURIComponent(servicoId));
+    const r = await fetch('/' + PANEL_PREFIX + '/kanban/slots?staff_id='+encodeURIComponent(staffId)+'&data='+encodeURIComponent(data)+'&servico_id='+encodeURIComponent(servicoId));
     const { slots } = await r.json();
     if (!slots.length) {
       sel.innerHTML = '<option value="">Sem horários disponíveis</option>';
@@ -3612,7 +3563,7 @@ receptionRouter.get('/kanban', (req, res) => {
       data: document.getElementById('mData').value,
       horario: document.getElementById('mHorario').value,
     });
-    const r = await fetch('/'+KB_SECRET+'/kanban/agendar', { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body });
+    const r = await fetch('/' + PANEL_PREFIX + '/kanban/agendar', { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body });
     const res = await r.json();
     if (res.erro) {
       err.textContent = res.erro;
@@ -3623,15 +3574,25 @@ receptionRouter.get('/kanban', (req, res) => {
     location.reload();
   });`
 
-  res.send(shell('kanban', 'Atendimentos', dataTitulo, body, script, RECEPTION_SECRET))
+  res.send(shell('kanban', 'Atendimentos', dataTitulo, body, script, panelPrefix))
+}
+
+receptionRouter.get('/kanban', (req, res) => {
+  req.panelPrefix = 'recepcao'
+  renderKanbanPage(req, res)
+})
+router.get('/kanban', (req, res) => {
+  req.panelPrefix = 'admin'
+  renderKanbanPage(req, res)
 })
 
-receptionRouter.get('/kanban/dados', (req, res) => {
-  const data = req.query.data || hojeStr()
-  res.json({ agendamentos: getAgendamentosKanban(data), timestamp: Date.now() })
-})
+function registerKanbanApiRoutes(targetRouter) {
+  targetRouter.get('/kanban/dados', (req, res) => {
+    const data = req.query.data || hojeStr()
+    res.json({ agendamentos: getAgendamentosKanban(data), timestamp: Date.now() })
+  })
 
-receptionRouter.post('/kanban/mover', express.urlencoded({ extended: false }), async (req, res) => {
+  targetRouter.post('/kanban/mover', express.urlencoded({ extended: false }), async (req, res) => {
   const { id, novo_status } = req.body
   const permitidos = ['chegou', 'em_atendimento', 'concluido', 'nao_compareceu', 'cancelado']
   if (!id || !permitidos.includes(novo_status)) {
@@ -3648,9 +3609,9 @@ receptionRouter.post('/kanban/mover', express.urlencoded({ extended: false }), a
   } catch (e) {
     return res.status(400).json({ erro: e.message || 'Erro ao mover' })
   }
-})
+  })
 
-receptionRouter.get('/kanban/slots', async (req, res) => {
+  targetRouter.get('/kanban/slots', async (req, res) => {
   try {
     const { staff_id, data, servico_id } = req.query
     if (!staff_id || !data || !servico_id) {
@@ -3674,9 +3635,9 @@ receptionRouter.get('/kanban/slots', async (req, res) => {
   } catch (e) {
     return res.status(500).json({ erro: e.message, slots: [] })
   }
-})
+  })
 
-receptionRouter.post('/kanban/agendar', express.urlencoded({ extended: false }), async (req, res) => {
+  targetRouter.post('/kanban/agendar', express.urlencoded({ extended: false }), async (req, res) => {
   const { nome, whatsapp, servico_id, staff_id, data, horario } = req.body
   if (!nome || !whatsapp || !servico_id || !staff_id || !data || !horario) {
     return res.status(400).json({ erro: 'Preencha todos os campos obrigatórios.' })
@@ -3700,7 +3661,11 @@ receptionRouter.post('/kanban/agendar', express.urlencoded({ extended: false }),
   } catch (e) {
     return res.status(400).json({ erro: e.message || 'Erro ao agendar' })
   }
-})
+  })
+}
+
+registerKanbanApiRoutes(receptionRouter)
+registerKanbanApiRoutes(router)
 
 // ═══════════════════════════════════════════════════════════════
 // ROTA: /faturamento
@@ -3710,8 +3675,8 @@ router.get('/faturamento', (req, res) => {
   const periodo = req.query.periodo || 'semana'
   const aba     = req.query.aba === 'barbeiros' ? 'barbeiros' : 'geral'
 
-  const tabGeral = `/${SECRET}/faturamento?data=${encodeURIComponent(data)}&periodo=${periodo}&aba=geral`
-  const tabBarb  = `/${SECRET}/faturamento?data=${encodeURIComponent(data)}&periodo=${periodo}&aba=barbeiros`
+  const tabGeral = `/admin/faturamento?data=${encodeURIComponent(data)}&periodo=${periodo}&aba=geral`
+  const tabBarb  = `/admin/faturamento?data=${encodeURIComponent(data)}&periodo=${periodo}&aba=barbeiros`
   const abasTopo = `
   <div style="display:flex;gap:.5rem;margin-bottom:1.25rem;flex-wrap:wrap;align-items:center">
     <a href="${tabGeral}" class="btn ${aba === 'geral' ? 'btn-primary' : 'btn-ghost'} btn-sm">Geral</a>
@@ -3721,7 +3686,7 @@ router.get('/faturamento', (req, res) => {
   if (aba === 'barbeiros') {
     const porBarbaraRows = getFaturamentoPorBarbeiroAdministrativo(periodo)
     const abasPeriodoBarb = ['semana', 'mes', 'ano'].map((p) => `
-      <a href="/${SECRET}/faturamento?periodo=${p}&data=${encodeURIComponent(data)}&aba=barbeiros" class="btn ${periodo === p ? 'btn-primary' : 'btn-ghost'} btn-sm">${
+      <a href="/admin/faturamento?periodo=${p}&data=${encodeURIComponent(data)}&aba=barbeiros" class="btn ${periodo === p ? 'btn-primary' : 'btn-ghost'} btn-sm">${
   { semana:'7 dias', mes:'Este mês', ano:'Este ano' }[p]
 }</a>`).join('')
     const linhasBarb = porBarbaraRows.length
@@ -3743,7 +3708,7 @@ router.get('/faturamento', (req, res) => {
         <span class="toolbar-label">Data base</span>
         <input type="date" lang="pt-BR" id="dataInput" value="${data}">
       </div>
-      <button class="btn btn-ghost" onclick="window.location.href='/${SECRET}/faturamento?data='+document.getElementById('dataInput').value+'&periodo=${periodo}&aba=barbeiros'">Ver</button>
+      <button class="btn btn-ghost" onclick="window.location.href='/admin/faturamento?data='+document.getElementById('dataInput').value+'&periodo=${periodo}&aba=barbeiros'">Ver</button>
     </div>
     <p class="form-hint" style="margin-bottom:1rem">${ic.warn} Apenas serviços concluídos. Período: ${{ semana:'7 dias', mes:'Este mês', ano:'Este ano' }[periodo]} (mesmo critério do gráfico geral).</p>
     <div class="section-header">
@@ -3796,7 +3761,7 @@ router.get('/faturamento', (req, res) => {
     </tr>`).join('') : `<tr><td colspan="6"><div class="empty"><div class="empty-icon">💰</div><div class="empty-text">Sem movimentação neste dia</div></div></td></tr>`
 
   const abasPeriodo = ['semana','mes','ano'].map(p => `
-    <a href="/${SECRET}/faturamento?periodo=${p}&data=${encodeURIComponent(data)}&aba=geral" class="btn ${periodo===p?'btn-primary':'btn-ghost'} btn-sm">${
+    <a href="/admin/faturamento?periodo=${p}&data=${encodeURIComponent(data)}&aba=geral" class="btn ${periodo===p?'btn-primary':'btn-ghost'} btn-sm">${
       {semana:'7 dias',mes:'Este mês',ano:'Este ano'}[p]
     }</a>`).join('')
 
@@ -3814,7 +3779,7 @@ router.get('/faturamento', (req, res) => {
       <span class="toolbar-label">Data base</span>
       <input type="date" lang="pt-BR" id="dataInput" value="${data}">
     </div>
-    <button class="btn btn-ghost" onclick="window.location.href='/${SECRET}/faturamento?data='+document.getElementById('dataInput').value+'&periodo=${periodo}&aba=geral'">Ver</button>
+    <button class="btn btn-ghost" onclick="window.location.href='/admin/faturamento?data='+document.getElementById('dataInput').value+'&periodo=${periodo}&aba=geral'">Ver</button>
   </div>
 
   <div class="stats" style="margin-bottom:1.25rem">
@@ -3916,7 +3881,7 @@ router.get('/financeiro', (req, res) => {
   const pillsPer = ['semana', 'mes', 'ano']
     .map(
       (p) =>
-        `<a href="/${SECRET}/financeiro?per=${p}" class="btn ${per === p ? 'btn-primary' : 'btn-ghost'} btn-sm">${perLabels[p]}</a>`,
+        `<a href="/admin/financeiro?per=${p}" class="btn ${per === p ? 'btn-primary' : 'btn-ghost'} btn-sm">${perLabels[p]}</a>`,
     )
     .join('')
 
@@ -3988,7 +3953,7 @@ router.get('/financeiro/comissoes', (req, res) => {
       <td>${escapeHtml(o.servico_id)}</td>
       <td>${escapeHtml(String(o.pct ?? ''))}%</td>
       <td style="white-space:nowrap">
-        <form method="POST" action="/${SECRET}/financeiro/comissoes/override-remover" style="display:inline">
+        <form method="POST" action="/admin/financeiro/comissoes/override-remover" style="display:inline">
           <input type="hidden" name="barbeiro_id" value="${escapeHtml(b.id)}">
           <input type="hidden" name="servico_id" value="${escapeHtml(o.servico_id)}">
           <button type="submit" class="btn btn-ghost btn-sm">${ic.box} Remover</button>
@@ -4010,7 +3975,7 @@ router.get('/financeiro/comissoes', (req, res) => {
         <div style="display:flex;flex-wrap:wrap;gap:.35rem">
           ${
             pctPad === 0
-              ? `<a href="/${SECRET}/financeiro/comissoes?de=${encodeURIComponent(de)}&ate=${encodeURIComponent(ate)}#cfg-padrao-${escapeHtml(b.id)}" class="btn btn-primary btn-sm">${ic.gear} Configurar</a>`
+              ? `<a href="/admin/financeiro/comissoes?de=${encodeURIComponent(de)}&ate=${encodeURIComponent(ate)}#cfg-padrao-${escapeHtml(b.id)}" class="btn btn-primary btn-sm">${ic.gear} Configurar</a>`
               : ''
           }
           <button type="button" class="btn btn-ghost btn-sm" onclick="document.getElementById('dlg-f-${escapeHtml(b.id)}').showModal()">${ic.check} Criar fechamento</button>
@@ -4024,7 +3989,7 @@ router.get('/financeiro/comissoes', (req, res) => {
       </div>
       <dialog id="dlg-f-${escapeHtml(b.id)}" class="finance-dlg">
         <div class="fin-dlg-hd">${ic.check} Novo fechamento — ${escapeHtml(b.nome)}</div>
-        <form method="POST" action="/${SECRET}/financeiro/fechamentos/criar">
+        <form method="POST" action="/admin/financeiro/fechamentos/criar">
           <input type="hidden" name="barbeiro_id" value="${escapeHtml(b.id)}">
           <div class="fin-dlg-bd">
             <div class="form-group" style="margin:0"><label class="form-label">Início do período</label><input type="date" lang="pt-BR" name="periodo_inicio" value="${escapeHtml(de)}" required></div>
@@ -4039,7 +4004,7 @@ router.get('/financeiro/comissoes', (req, res) => {
       </dialog>
       <details style="margin-top:.5rem;font-size:.8rem"><summary>${ic.chart} Overrides por serviço</summary>
       <div class="table-wrap" style="margin-top:.5rem"><table><thead><tr><th>Serviço ID</th><th>%</th><th></th></tr></thead><tbody>${rowsOv}</tbody></table></div>
-      <form method="POST" action="/${SECRET}/financeiro/comissoes/override" style="margin-top:.5rem;display:flex;flex-wrap:wrap;gap:.5rem;align-items:flex-end">
+      <form method="POST" action="/admin/financeiro/comissoes/override" style="margin-top:.5rem;display:flex;flex-wrap:wrap;gap:.5rem;align-items:flex-end">
         <input type="hidden" name="barbeiro_id" value="${escapeHtml(b.id)}">
         <div class="form-group" style="margin:0"><label class="form-label">Serviço</label><select name="servico_id" required><option value="" disabled selected>Escolha…</option>${optsServico}</select></div>
         <div class="form-group" style="margin:0;width:92px"><label class="form-label">% comissão</label><input type="number" name="pct_override" step="0.01" min="0" max="100" required placeholder="35"></div>
@@ -4074,14 +4039,14 @@ router.get('/financeiro/comissoes', (req, res) => {
   <div class="toolbar" style="margin-bottom:1rem">
     <div class="toolbar-group"><span class="toolbar-label">De</span><input type="date" lang="pt-BR" id="cfDe" value="${escapeHtml(de)}"></div>
     <div class="toolbar-group"><span class="toolbar-label">Até</span><input type="date" lang="pt-BR" id="cfAte" value="${escapeHtml(ate)}"></div>
-    <button type="button" class="btn btn-ghost" onclick="window.location.href='/${SECRET}/financeiro/comissoes?de='+document.getElementById('cfDe').value+'&ate='+document.getElementById('cfAte').value">${ic.cal} Ver período</button>
+    <button type="button" class="btn btn-ghost" onclick="window.location.href='/admin/financeiro/comissoes?de='+document.getElementById('cfDe').value+'&ate='+document.getElementById('cfAte').value">${ic.cal} Ver período</button>
   </div>
 
   <div class="section-header"><span class="section-title">${ic.chart} Comissões do período (por barbeiro)</span></div>
   <div class="fin-cards">${cards || `<div class="empty"><div class="empty-text">Nenhum barbeiro ativo</div></div>`}</div>
 
   <div class="section-header" style="margin-top:1.5rem" id="config-pcts"><span class="section-title">${ic.gear} Configurar percentuais</span></div>
-  <div class="form-card" style="max-width:560px;margin-bottom:.5rem"><div class="form-card-title">${ic.gear} % padrão por barbeiro</div><form method="POST" action="/${SECRET}/financeiro/comissoes/config">${inputsPadrao}<div style="margin-top:1rem"><button type="submit" class="btn btn-primary">${ic.check} Salvar percentuais</button></div></form></div>
+  <div class="form-card" style="max-width:560px;margin-bottom:.5rem"><div class="form-card-title">${ic.gear} % padrão por barbeiro</div><form method="POST" action="/admin/financeiro/comissoes/config">${inputsPadrao}<div style="margin-top:1rem"><button type="submit" class="btn btn-primary">${ic.check} Salvar percentuais</button></div></form></div>
   `
 
   res.send(shell('financeiro/comissoes', 'Comissões', 'Configuração e estimativas Andy Na Régua', body))
@@ -4097,24 +4062,24 @@ router.post('/financeiro/comissoes/config', express.urlencoded({ extended: false
     updateBarbeiro(b.id, { comissao_padrao_pct: v })
   }
   log('Painel: comissões — percentuais padrão atualizados')
-  res.redirect(`/${SECRET}/financeiro/comissoes?msg=cfg`)
+  res.redirect(`/admin/financeiro/comissoes?msg=cfg`)
 })
 
 router.post('/financeiro/comissoes/override', express.urlencoded({ extended: false }), (req, res) => {
   const { barbeiro_id, servico_id } = req.body
   let pct = Number.parseFloat(req.body.pct_override)
-  if (!barbeiro_id || !servico_id || Number.isNaN(pct)) return res.redirect(`/${SECRET}/financeiro/comissoes?msg=err`)
+  if (!barbeiro_id || !servico_id || Number.isNaN(pct)) return res.redirect(`/admin/financeiro/comissoes?msg=err`)
   pct = Math.max(0, Math.min(100, pct))
   setComissaoOverride(barbeiro_id, servico_id, pct)
   log(`Painel: override comissão — ${barbeiro_id}/${servico_id} → ${pct}%`)
-  res.redirect(`/${SECRET}/financeiro/comissoes?msg=ov`)
+  res.redirect(`/admin/financeiro/comissoes?msg=ov`)
 })
 
 router.post('/financeiro/comissoes/override-remover', express.urlencoded({ extended: false }), (req, res) => {
   const { barbeiro_id, servico_id } = req.body
-  if (!barbeiro_id || !servico_id) return res.redirect(`/${SECRET}/financeiro/comissoes`)
+  if (!barbeiro_id || !servico_id) return res.redirect(`/admin/financeiro/comissoes`)
   getDb().prepare(`DELETE FROM comissao_overrides WHERE barbeiro_id = ? AND servico_id = ?`).run(barbeiro_id, servico_id)
-  res.redirect(`/${SECRET}/financeiro/comissoes?msg=rm`)
+  res.redirect(`/admin/financeiro/comissoes?msg=rm`)
 })
 
 router.get('/financeiro/fechamentos', (req, res) => {
@@ -4130,9 +4095,9 @@ router.get('/financeiro/fechamentos', (req, res) => {
 
   const filtLinks = `
   <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin-bottom:.75rem">
-    <a href="/${SECRET}/financeiro/fechamentos?st=todos${bid ? `&barbeiro=${encodeURIComponent(bid)}` : ''}" class="btn ${st === 'todos' ? 'btn-primary' : 'btn-ghost'} btn-sm">Todos</a>
-    <a href="/${SECRET}/financeiro/fechamentos?st=aberto${bid ? `&barbeiro=${encodeURIComponent(bid)}` : ''}" class="btn ${st === 'aberto' ? 'btn-primary' : 'btn-ghost'} btn-sm">Abertos</a>
-    <a href="/${SECRET}/financeiro/fechamentos?st=pago${bid ? `&barbeiro=${encodeURIComponent(bid)}` : ''}" class="btn ${st === 'pago' ? 'btn-primary' : 'btn-ghost'} btn-sm">Pagos</a>
+    <a href="/admin/financeiro/fechamentos?st=todos${bid ? `&barbeiro=${encodeURIComponent(bid)}` : ''}" class="btn ${st === 'todos' ? 'btn-primary' : 'btn-ghost'} btn-sm">Todos</a>
+    <a href="/admin/financeiro/fechamentos?st=aberto${bid ? `&barbeiro=${encodeURIComponent(bid)}` : ''}" class="btn ${st === 'aberto' ? 'btn-primary' : 'btn-ghost'} btn-sm">Abertos</a>
+    <a href="/admin/financeiro/fechamentos?st=pago${bid ? `&barbeiro=${encodeURIComponent(bid)}` : ''}" class="btn ${st === 'pago' ? 'btn-primary' : 'btn-ghost'} btn-sm">Pagos</a>
   </div>`
 
   const alert =
@@ -4176,7 +4141,7 @@ router.get('/financeiro/fechamentos', (req, res) => {
   ${
     f.status === 'aberto'
       ? `<dialog id="dlg-pg-${f.id}" class="finance-dlg">
-    <form method="POST" action="/${SECRET}/financeiro/fechamentos/${f.id}/pagar"><div class="fin-dlg-hd">${ic.money} Confirmar pagamento</div><div class="fin-dlg-bd"><p style="margin:0;font-size:.82rem">Confirme o pagamento ao barbeiro. Opcionalmente deixe uma observação.</p><div class="form-group" style="margin-bottom:0"><label class="form-label">Observação interna</label><textarea name="obs" rows="3" placeholder="Ex.: PIX chave xxx, conferido pela recepção."></textarea></div></div><div class="fin-dlg-ft"><button type="button" class="btn btn-ghost" onclick="this.closest('dialog').close()">Cancelar</button><button type="submit" class="btn btn-primary">${ic.check} Registrar pagamento</button></div></form>
+    <form method="POST" action="/admin/financeiro/fechamentos/${f.id}/pagar"><div class="fin-dlg-hd">${ic.money} Confirmar pagamento</div><div class="fin-dlg-bd"><p style="margin:0;font-size:.82rem">Confirme o pagamento ao barbeiro. Opcionalmente deixe uma observação.</p><div class="form-group" style="margin-bottom:0"><label class="form-label">Observação interna</label><textarea name="obs" rows="3" placeholder="Ex.: PIX chave xxx, conferido pela recepção."></textarea></div></div><div class="fin-dlg-ft"><button type="button" class="btn btn-ghost" onclick="this.closest('dialog').close()">Cancelar</button><button type="submit" class="btn btn-primary">${ic.check} Registrar pagamento</button></div></form>
     </dialog>`
       : ''
   }
@@ -4188,7 +4153,7 @@ router.get('/financeiro/fechamentos', (req, res) => {
   const body = `
   ${alert}
   ${filtLinks}
-  <form method="GET" action="/${SECRET}/financeiro/fechamentos" class="toolbar" style="margin-bottom:1rem;flex-wrap:wrap">
+  <form method="GET" action="/admin/financeiro/fechamentos" class="toolbar" style="margin-bottom:1rem;flex-wrap:wrap">
     <input type="hidden" name="st" value="${escapeHtml(st)}">
     <div class="toolbar-group"><span class="toolbar-label">Barbeiro</span><select name="barbeiro" onchange="this.form.submit()">${optBarb}</select></div>
   </form>
@@ -4203,22 +4168,22 @@ router.post('/financeiro/fechamentos/criar', express.urlencoded({ extended: fals
   const pi = req.body.periodo_inicio
   const pf = req.body.periodo_fim
   if (!barbeiroId || !pi || !pf || !/^\d{4}-\d{2}-\d{2}$/.test(pi) || !/^\d{4}-\d{2}-\d{2}$/.test(pf)) {
-    return res.redirect(`/${SECRET}/financeiro/fechamentos?msg=erro_data`)
+    return res.redirect(`/admin/financeiro/fechamentos?msg=erro_data`)
   }
   const r = criarFechamentoComCalculo(barbeiroId, pi, pf)
   if (r.erro) {
     log(`Painel: fechamento falhou (${barbeiroId} ${pi}–${pf}): ${r.erro}`)
-    return res.redirect(`/${SECRET}/financeiro/fechamentos?msg=vazio`)
+    return res.redirect(`/admin/financeiro/fechamentos?msg=vazio`)
   }
   log(`Painel: fechamento #${r.fechamento.id} criado — ${barbeiroId} (${r.count} atend.)`)
-  res.redirect(`/${SECRET}/financeiro/fechamentos?msg=criado`)
+  res.redirect(`/admin/financeiro/fechamentos?msg=criado`)
 })
 
 router.post('/financeiro/fechamentos/:id/pagar', express.urlencoded({ extended: false }), (req, res) => {
   const id = Number(req.params.id)
   const obs = req.body.obs || ''
   const f = getDb().prepare(`SELECT * FROM fechamentos WHERE id = ?`).get(id)
-  if (!f || f.status !== 'aberto') return res.redirect(`/${SECRET}/financeiro/fechamentos`)
+  if (!f || f.status !== 'aberto') return res.redirect(`/admin/financeiro/fechamentos`)
   const det = getFechamentoDetalhe(id)
   registrarPagamentoFechamento(id, 'Administrador (painel)')
   atualizarObsFechamento(id, obs)
@@ -4227,7 +4192,7 @@ router.post('/financeiro/fechamentos/:id/pagar', express.urlencoded({ extended: 
   const pctFmt = Number(f.pct_aplicado || 0).toFixed(1).replace('.', ',')
   enqueueWhatsAppPagamento(barbeiro, f, count, pctFmt)
   log(`Painel: fechamento #${id} pago (${count} atend.; WhatsApp disparado)`)
-  res.redirect(`/${SECRET}/financeiro/fechamentos?msg=pago`)
+  res.redirect(`/admin/financeiro/fechamentos?msg=pago`)
 })
 
 router.get('/financeiro/despesas', (req, res) => {
@@ -4267,7 +4232,7 @@ router.get('/financeiro/despesas', (req, res) => {
     <td>${fmtBRL(d.valor)}</td>
     <td class="td-muted">${d.obs ? escapeHtml(d.obs) : '—'}</td>
     <td style="white-space:nowrap">
-      <form method="POST" action="/${SECRET}/financeiro/despesas/${d.id}/deletar" style="display:inline" onsubmit="return confirm('Excluir esta despesa permanentemente?')">
+      <form method="POST" action="/admin/financeiro/despesas/${d.id}/deletar" style="display:inline" onsubmit="return confirm('Excluir esta despesa permanentemente?')">
         <button type="submit" class="btn btn-ghost btn-sm">${ic.box} Excluir</button>
       </form>
     </td>
@@ -4284,7 +4249,7 @@ router.get('/financeiro/despesas', (req, res) => {
     <div class="toolbar-group"><span class="toolbar-label">De</span><input type="date" lang="pt-BR" name="de" form="filtDesp" value="${escapeHtml(de)}"></div>
     <div class="toolbar-group"><span class="toolbar-label">Até</span><input type="date" lang="pt-BR" name="ate" form="filtDesp" value="${escapeHtml(ate)}"></div>
     <div class="toolbar-group"><span class="toolbar-label">Categoria</span><select name="cat" form="filtDesp">${optsCat}</select></div>
-    <form id="filtDesp" method="GET" action="/${SECRET}/financeiro/despesas"><button type="submit" class="btn btn-primary btn-sm">${ic.cal} Filtrar</button></form>
+    <form id="filtDesp" method="GET" action="/admin/financeiro/despesas"><button type="submit" class="btn btn-primary btn-sm">${ic.cal} Filtrar</button></form>
   </div>
 
   <div class="stats" style="margin-bottom:1rem">
@@ -4293,7 +4258,7 @@ router.get('/financeiro/despesas', (req, res) => {
 
   <div class="section-header"><span class="section-title">${ic.plus} Nova despesa</span></div>
   <div class="form-card" style="max-width:640px;margin-bottom:1.25rem">
-    <form method="POST" action="/${SECRET}/financeiro/despesas/criar" class="form-row" style="flex-wrap:wrap;gap:.75rem;align-items:flex-end">
+    <form method="POST" action="/admin/financeiro/despesas/criar" class="form-row" style="flex-wrap:wrap;gap:.75rem;align-items:flex-end">
       <div class="form-group" style="margin:0;flex:2;min-width:160px"><label class="form-label">Descrição</label><input type="text" name="descricao" required placeholder="Ex.: Aluguel loja Maio"></div>
       <div class="form-group" style="margin:0;width:120px"><label class="form-label">Valor</label><input type="text" inputmode="decimal" name="valor" required placeholder="1500,00"></div>
       <div class="form-group" style="margin:0"><label class="form-label">Categoria</label><select name="categoria">${optsCatNova}</select></div>
@@ -4321,7 +4286,7 @@ router.post('/financeiro/despesas/criar', express.urlencoded({ extended: false }
   const valor = Number.parseFloat(valorRaw)
   const categoria = req.body.categoria || 'outros'
   if (!descricao?.trim() || !data || !/^\d{4}-\d{2}-\d{2}$/.test(data) || Number.isNaN(valor)) {
-    return res.redirect(`/${SECRET}/financeiro/despesas?msg=err`)
+    return res.redirect(`/admin/financeiro/despesas?msg=err`)
   }
   criarDespesa({
     descricao: descricao.trim(),
@@ -4332,14 +4297,14 @@ router.post('/financeiro/despesas/criar', express.urlencoded({ extended: false }
     obs: obs?.trim() ? obs.trim() : null,
   })
   log(`Painel: despesa criada "${descricao}" ${valor}`)
-  res.redirect(`/${SECRET}/financeiro/despesas?msg=ok`)
+  res.redirect(`/admin/financeiro/despesas?msg=ok`)
 })
 
 router.post('/financeiro/despesas/:id/deletar', express.urlencoded({ extended: false }), (req, res) => {
   const id = Number(req.params.id)
   deletarDespesa(id)
   log(`Painel: despesa #${id} removida`)
-  res.redirect(`/${SECRET}/financeiro/despesas?msg=del`)
+  res.redirect(`/admin/financeiro/despesas?msg=del`)
 })
 
 router.get('/financeiro/caixa-hoje', (req, res) => {
@@ -4352,8 +4317,8 @@ router.get('/financeiro/caixa-hoje', (req, res) => {
   const body = `
   <div class="toolbar" style="margin-bottom:1.25rem">
     <div class="toolbar-group"><span class="toolbar-label">Data</span><input type="date" lang="pt-BR" id="cxData" value="${escapeHtml(data)}"></div>
-    <button class="btn btn-ghost" onclick="window.location.href='/${SECRET}/financeiro/caixa-hoje?data='+document.getElementById('cxData').value">Ver</button>
-    <a href="/${SECRET}/financeiro/caixa-hoje" class="btn btn-ghost">Hoje</a>
+    <button class="btn btn-ghost" onclick="window.location.href='/admin/financeiro/caixa-hoje?data='+document.getElementById('cxData').value">Ver</button>
+    <a href="/admin/financeiro/caixa-hoje" class="btn btn-ghost">Hoje</a>
   </div>
   <div class="stats" style="margin-bottom:1.25rem">
     <div class="stat"><div class="stat-icon green">${ic.money}</div><div class="stat-val">${fmtBRL(r.totalBruto)}</div><div class="stat-lbl">Total bruto</div><div class="stat-accent green"></div></div>
@@ -4407,7 +4372,7 @@ router.get('/clientes', (req, res) => {
       <td>${c.lgpd_aceito?`<span style="color:var(--green);font-size:.75rem">Aceito</span>`:`<span class="td-muted" style="font-size:.75rem">Pendente</span>`}</td>
       <td class="td-muted">${formatData(c.created_at)}</td>
       <td>
-        <a href="/${SECRET}/clientes/${encodeURIComponent(c.whatsapp_number)}" class="btn btn-ghost btn-sm">Ver histórico</a>
+        <a href="/admin/clientes/${encodeURIComponent(c.whatsapp_number)}" class="btn btn-ghost btn-sm">Ver histórico</a>
       </td>
     </tr>`).join('') : `<tr><td colspan="6"><div class="empty"><div class="empty-icon">👥</div><div class="empty-text">${busca?'Nenhum cliente encontrado':'Nenhum cliente cadastrado ainda'}</div></div></td></tr>`
 
@@ -4417,7 +4382,7 @@ router.get('/clientes', (req, res) => {
       <span class="toolbar-label">Buscar</span>
       <input type="text" id="busca" value="${busca}" placeholder="Nome ou número WhatsApp...">
     </div>
-    <button class="btn btn-ghost" onclick="window.location.href='/${SECRET}/clientes?q='+encodeURIComponent(document.getElementById('busca').value)">Buscar</button>
+    <button class="btn btn-ghost" onclick="window.location.href='/admin/clientes?q='+encodeURIComponent(document.getElementById('busca').value)">Buscar</button>
   </div>
   <div class="table-wrap">
     <table>
@@ -4426,7 +4391,7 @@ router.get('/clientes', (req, res) => {
     </table>
   </div>`
 
-  const script = `document.getElementById('busca').addEventListener('keydown',e=>{if(e.key==='Enter')window.location.href='/${SECRET}/clientes?q='+encodeURIComponent(e.target.value)})`
+  const script = `document.getElementById('busca').addEventListener('keydown',e=>{if(e.key==='Enter')window.location.href='/admin/clientes?q='+encodeURIComponent(e.target.value)})`
 
   res.send(shell('clientes', 'Clientes', `${clientes.length} cadastrados`, body, script))
 })
@@ -4434,7 +4399,7 @@ router.get('/clientes', (req, res) => {
 router.get('/clientes/:numero', (req, res) => {
   const numero    = decodeURIComponent(req.params.numero)
   const cliente   = getDb().prepare('SELECT * FROM clientes WHERE whatsapp_number = ?').get(numero)
-  if (!cliente) return res.redirect(`/${SECRET}/clientes`)
+  if (!cliente) return res.redirect(`/admin/clientes`)
 
   const historico  = getHistoricoCliente(numero)
   const totalGasto = historico.reduce((s, a) => s + (a.servico_preco || 0), 0)
@@ -4448,7 +4413,7 @@ router.get('/clientes/:numero', (req, res) => {
     </tr>`).join('') : `<tr><td colspan="4"><div class="empty"><div class="empty-text">Sem agendamentos registrados</div></div></td></tr>`
 
   const body = `
-  <a href="/${SECRET}/clientes" class="btn btn-ghost btn-sm" style="margin-bottom:1.25rem;display:inline-flex">${ic.back} Voltar</a>
+  <a href="/admin/clientes" class="btn btn-ghost btn-sm" style="margin-bottom:1.25rem;display:inline-flex">${ic.back} Voltar</a>
   <div style="display:flex;align-items:center;gap:1rem;margin-bottom:1.5rem">
     <div class="avatar" style="width:48px;height:48px;font-size:1rem">${initials(cliente.nome)}</div>
     <div>
@@ -4504,7 +4469,7 @@ router.get('/estoque', (req, res) => {
   const formNovo = `
   <div class="form-card" style="margin-bottom:1.25rem">
     <div class="form-card-title">${ic.plus} Adicionar novo produto</div>
-    <form method="POST" action="/${SECRET}/estoque/criar">
+    <form method="POST" action="/admin/estoque/criar">
       <div class="form-row">
         <div class="form-group">
           <label class="form-label">Nome do produto *</label>
@@ -4528,7 +4493,7 @@ router.get('/estoque', (req, res) => {
   const formEditar = editando ? `
   <div class="form-card" style="margin-bottom:1.25rem;border-color:var(--red);box-shadow:0 0 0 1px var(--red-dim)">
     <div class="form-card-title">${ic.check} Editando: ${editando.nome}</div>
-    <form method="POST" action="/${SECRET}/estoque/editar">
+    <form method="POST" action="/admin/estoque/editar">
       <input type="hidden" name="id" value="${editando.id}">
       <div class="form-row">
         <div class="form-group">
@@ -4546,7 +4511,7 @@ router.get('/estoque', (req, res) => {
       </div>
       <div style="display:flex;gap:.5rem;margin-top:.5rem">
         <button type="submit" class="btn btn-primary">${ic.check} Salvar alterações</button>
-        <a href="/${SECRET}/estoque" class="btn btn-ghost">Cancelar</a>
+        <a href="/admin/estoque" class="btn btn-ghost">Cancelar</a>
       </div>
     </form>
   </div>` : ''
@@ -4572,13 +4537,13 @@ router.get('/estoque', (req, res) => {
       <div class="product-actions" style="align-items:center;justify-content:space-between">
         <span class="stock-label">Ajustar</span>
         <div style="display:flex;align-items:center;gap:.35rem">
-          <form method="POST" action="/${SECRET}/estoque/ajustar" style="display:contents">
+          <form method="POST" action="/admin/estoque/ajustar" style="display:contents">
             <input type="hidden" name="id" value="${p.id}">
             <input type="hidden" name="delta" value="-1">
             <button class="btn btn-ghost btn-sm" type="submit" style="padding:.35rem .65rem" ${p.estoque===0?'disabled':''}>−</button>
           </form>
           <span class="stock-count ${cls}" style="min-width:2.5rem;text-align:center;font-size:.9rem">${p.estoque}</span>
-          <form method="POST" action="/${SECRET}/estoque/ajustar" style="display:contents">
+          <form method="POST" action="/admin/estoque/ajustar" style="display:contents">
             <input type="hidden" name="id" value="${p.id}">
             <input type="hidden" name="delta" value="1">
             <button class="btn btn-ghost btn-sm" type="submit" style="padding:.35rem .65rem">+</button>
@@ -4586,13 +4551,13 @@ router.get('/estoque', (req, res) => {
         </div>
       </div>
       <div style="display:flex;gap:.35rem;margin-top:.4rem">
-        <a href="/${SECRET}/estoque?editar=${p.id}" class="btn btn-ghost btn-sm" style="flex:1;justify-content:center">Editar</a>
-        <form method="POST" action="/${SECRET}/estoque/toggle" style="flex:1">
+        <a href="/admin/estoque?editar=${p.id}" class="btn btn-ghost btn-sm" style="flex:1;justify-content:center">Editar</a>
+        <form method="POST" action="/admin/estoque/toggle" style="flex:1">
           <input type="hidden" name="id" value="${p.id}">
           <input type="hidden" name="ativo" value="${p.ativo?'0':'1'}">
           <button class="btn btn-ghost btn-sm" type="submit" style="width:100%">${p.ativo?'Desativar':'Ativar'}</button>
         </form>
-        <form method="POST" action="/${SECRET}/estoque/deletar" style="flex:0">
+        <form method="POST" action="/admin/estoque/deletar" style="flex:0">
           <input type="hidden" name="id" value="${p.id}">
           <button class="btn btn-danger btn-sm" type="submit" onclick="return confirm('Excluir ${p.nome.replace(/'/g,"\\'")}? Essa ação não pode ser desfeita.')">${ic.trash}</button>
         </form>
@@ -4652,7 +4617,7 @@ router.get('/estoque', (req, res) => {
 router.post('/estoque/ajustar', express.urlencoded({ extended: false }), (req, res) => {
   const { id, delta } = req.body
   const produto = getDb().prepare('SELECT * FROM produtos WHERE id = ?').get(id)
-  if (!produto) return res.redirect(`/${SECRET}/estoque`)
+  if (!produto) return res.redirect(`/admin/estoque`)
   const novoEstoque = Math.max(0, produto.estoque + Number(delta))
   atualizarEstoque(id, novoEstoque)
   try {
@@ -4662,7 +4627,7 @@ router.post('/estoque/ajustar', express.urlencoded({ extended: false }), (req, r
     `).run(id, produto.nome, produto.estoque, novoEstoque, Number(delta))
   } catch (e) { /* sem log se tabela não existe */ }
   log(`Painel: ajuste estoque — produto ${id}: ${produto.estoque} → ${novoEstoque}`)
-  res.redirect(`/${SECRET}/estoque`)
+  res.redirect(`/admin/estoque`)
 })
 
 router.post('/estoque/atualizar', express.urlencoded({ extended: false }), (req, res) => {
@@ -4678,25 +4643,25 @@ router.post('/estoque/atualizar', express.urlencoded({ extended: false }), (req,
       `).run(id, produto.nome, produto.estoque, novo, novo - produto.estoque)
     } catch (e) { /* sem log se tabela não existe */ }
   }
-  res.redirect(`/${SECRET}/estoque?msg=ok`)
+  res.redirect(`/admin/estoque?msg=ok`)
 })
 
 router.post('/estoque/toggle', express.urlencoded({ extended: false }), (req, res) => {
   const { id, ativo } = req.body
   getDb().prepare(`UPDATE produtos SET ativo = ?, updated_at = datetime('now') WHERE id = ?`).run(Number(ativo), id)
-  res.redirect(`/${SECRET}/estoque`)
+  res.redirect(`/admin/estoque`)
 })
 
 router.post('/estoque/criar', express.urlencoded({ extended: false }), (req, res) => {
   try {
     const { nome, preco, descricao } = req.body
-    if (!nome || !preco) return res.redirect(`/${SECRET}/estoque?msg=err`)
+    if (!nome || !preco) return res.redirect(`/admin/estoque?msg=err`)
     criarProduto({ nome: nome.trim(), preco: Number(preco), descricao: (descricao||'').trim() })
     log(`Painel: produto criado — ${nome}`)
-    res.redirect(`/${SECRET}/estoque?msg=ok`)
+    res.redirect(`/admin/estoque?msg=ok`)
   } catch (e) {
     log('Erro ao criar produto:', e.message)
-    res.redirect(`/${SECRET}/estoque?msg=err`)
+    res.redirect(`/admin/estoque?msg=err`)
   }
 })
 
@@ -4705,10 +4670,10 @@ router.post('/estoque/editar', express.urlencoded({ extended: false }), (req, re
     const { id, nome, preco, descricao } = req.body
     updateProduto(id, { nome: nome.trim(), preco: Number(preco), descricao: (descricao||'').trim() })
     log(`Painel: produto editado — ${id}`)
-    res.redirect(`/${SECRET}/estoque?msg=ok`)
+    res.redirect(`/admin/estoque?msg=ok`)
   } catch (e) {
     log('Erro ao editar produto:', e.message)
-    res.redirect(`/${SECRET}/estoque?msg=err`)
+    res.redirect(`/admin/estoque?msg=err`)
   }
 })
 
@@ -4717,10 +4682,10 @@ router.post('/estoque/deletar', express.urlencoded({ extended: false }), (req, r
     const { id } = req.body
     deletarProduto(id)
     log(`Painel: produto deletado — ${id}`)
-    res.redirect(`/${SECRET}/estoque?msg=ok`)
+    res.redirect(`/admin/estoque?msg=ok`)
   } catch (e) {
     log('Erro ao deletar produto:', e.message)
-    res.redirect(`/${SECRET}/estoque?msg=err`)
+    res.redirect(`/admin/estoque?msg=err`)
   }
 })
 
@@ -4739,7 +4704,7 @@ router.get('/servicos', (req, res) => {
   const formNovo = `
   <div class="form-card" style="margin-bottom:1.25rem">
     <div class="form-card-title">${ic.plus} Adicionar novo serviço</div>
-    <form method="POST" action="/${SECRET}/servicos/criar">
+    <form method="POST" action="/admin/servicos/criar">
       <div class="form-row">
         <div class="form-group">
           <label class="form-label">Nome do serviço *</label>
@@ -4767,7 +4732,7 @@ router.get('/servicos', (req, res) => {
   const formEditar = editando ? `
   <div class="form-card" style="margin-bottom:1.25rem;border-color:var(--red);box-shadow:0 0 0 1px var(--red-dim)">
     <div class="form-card-title">${ic.check} Editando: ${editando.nome}</div>
-    <form method="POST" action="/${SECRET}/servicos/editar">
+    <form method="POST" action="/admin/servicos/editar">
       <input type="hidden" name="id" value="${editando.id}">
       <div class="form-row">
         <div class="form-group">
@@ -4793,7 +4758,7 @@ router.get('/servicos', (req, res) => {
       </div>
       <div style="display:flex;gap:.5rem;margin-top:.5rem">
         <button type="submit" class="btn btn-primary">${ic.check} Salvar alterações</button>
-        <a href="/${SECRET}/servicos" class="btn btn-ghost">Cancelar</a>
+        <a href="/admin/servicos" class="btn btn-ghost">Cancelar</a>
       </div>
     </form>
   </div>` : ''
@@ -4817,8 +4782,8 @@ router.get('/servicos', (req, res) => {
         </div>
       </div>
       <div style="display:flex;gap:.35rem;margin-top:.5rem">
-        <a href="/${SECRET}/servicos?editar=${s.id}" class="btn btn-ghost btn-sm" style="flex:1;justify-content:center">Editar</a>
-        <form method="POST" action="/${SECRET}/servicos/deletar">
+        <a href="/admin/servicos?editar=${s.id}" class="btn btn-ghost btn-sm" style="flex:1;justify-content:center">Editar</a>
+        <form method="POST" action="/admin/servicos/deletar">
           <input type="hidden" name="id" value="${s.id}">
           <button class="btn btn-danger btn-sm" type="submit" onclick="return confirm('Excluir o serviço ${s.nome.replace(/'/g,"\\'")}?')">${ic.trash}</button>
         </form>
@@ -4846,19 +4811,19 @@ router.get('/servicos', (req, res) => {
 router.post('/servicos/atualizar', express.urlencoded({ extended: false }), (req, res) => {
   const { id, preco, duracao } = req.body
   updateServico(id, { preco: Number(preco), duracao_minutos: Number(duracao) })
-  res.redirect(`/${SECRET}/servicos?msg=ok`)
+  res.redirect(`/admin/servicos?msg=ok`)
 })
 
 router.post('/servicos/criar', express.urlencoded({ extended: false }), (req, res) => {
   try {
     const { nome, preco, duracao, categoria } = req.body
-    if (!nome || !preco || !duracao) return res.redirect(`/${SECRET}/servicos?msg=err`)
+    if (!nome || !preco || !duracao) return res.redirect(`/admin/servicos?msg=err`)
     criarServico({ nome: nome.trim(), preco: Number(preco), duracao_minutos: Number(duracao), categoria: categoria || 'cabelo' })
     log(`Painel: serviço criado — ${nome}`)
-    res.redirect(`/${SECRET}/servicos?msg=ok`)
+    res.redirect(`/admin/servicos?msg=ok`)
   } catch (e) {
     log('Erro ao criar serviço:', e.message)
-    res.redirect(`/${SECRET}/servicos?msg=err`)
+    res.redirect(`/admin/servicos?msg=err`)
   }
 })
 
@@ -4868,10 +4833,10 @@ router.post('/servicos/editar', express.urlencoded({ extended: false }), (req, r
     updateServico(id, { nome: nome.trim(), preco: Number(preco), duracao_minutos: Number(duracao) })
     if (categoria) getDb().prepare(`UPDATE servicos SET categoria = ? WHERE id = ?`).run(categoria, id)
     log(`Painel: serviço editado — ${id}`)
-    res.redirect(`/${SECRET}/servicos?msg=ok`)
+    res.redirect(`/admin/servicos?msg=ok`)
   } catch (e) {
     log('Erro ao editar serviço:', e.message)
-    res.redirect(`/${SECRET}/servicos?msg=err`)
+    res.redirect(`/admin/servicos?msg=err`)
   }
 })
 
@@ -4880,10 +4845,10 @@ router.post('/servicos/deletar', express.urlencoded({ extended: false }), (req, 
     const { id } = req.body
     deletarServico(id)
     log(`Painel: serviço deletado — ${id}`)
-    res.redirect(`/${SECRET}/servicos?msg=ok`)
+    res.redirect(`/admin/servicos?msg=ok`)
   } catch (e) {
     log('Erro ao deletar serviço:', e.message)
-    res.redirect(`/${SECRET}/servicos?msg=err`)
+    res.redirect(`/admin/servicos?msg=err`)
   }
 })
 
@@ -4970,7 +4935,7 @@ router.get('/config', (req, res) => {
 
   const body = `
   ${msg==='ok' ? `<div class="alert alert-success">${ic.check} Configurações salvas com sucesso!</div>` : ''}
-  <form method="POST" action="/${SECRET}/config">
+  <form method="POST" action="/admin/config">
     ${sections}
     <div style="margin-top:1.25rem">
       <button type="submit" class="btn btn-primary">${ic.check} Salvar configurações</button>
@@ -4986,7 +4951,7 @@ router.post('/config', express.urlencoded({ extended: true }), (req, res) => {
     if (req.body[c.chave] !== undefined) setConfig(c.chave, req.body[c.chave])
   }
   log('Painel: configurações atualizadas')
-  res.redirect(`/${SECRET}/config?msg=ok`)
+  res.redirect(`/admin/config?msg=ok`)
 })
 
 // ═══════════════════════════════════════════════════════════════
@@ -5003,7 +4968,7 @@ router.get('/aprovar-sinais', (req, res) => {
       <td class="td-muted">${a.sinal_pago_at || '—'}</td>
       <td>${a.sinal_comprovante ? `<a href="${a.sinal_comprovante}" target="_blank" class="btn btn-ghost btn-sm">Ver</a>` : '—'}</td>
       <td>
-        <form method="POST" action="/${SECRET}/aprovar-sinais/${a.id}">
+        <form method="POST" action="/admin/aprovar-sinais/${a.id}">
           <button type="submit" class="btn btn-primary btn-sm">${ic.check} Aprovar</button>
         </form>
       </td>
@@ -5032,7 +4997,7 @@ router.post('/aprovar-sinais/:id', async (req, res) => {
     enfileirarMensagem(ag.whatsapp_number, M.sinalAprovado({ hora: horaLabel, dataLabel, barbeiro: staffNameById(ag.staff_id), servico: ag.servico_id }), 'critica')
     log(`Painel: sinal aprovado — agendamento #${id}`)
   }
-  res.redirect(`/${SECRET}/aprovar-sinais?msg=ok`)
+  res.redirect(`/admin/aprovar-sinais?msg=ok`)
 })
 
 // ═══════════════════════════════════════════════════════════════
@@ -5081,17 +5046,19 @@ router.get('/eventos-bot', (req, res) => {
 })
 
 // Redirects raiz
-router.get('/', (req, res) => res.redirect(`/${SECRET}/agenda`))
-receptionRouter.get('/', (req, res) => res.redirect(`/${RECEPTION_SECRET}/kanban`))
+router.get('/', (req, res) => res.redirect(`/admin/kanban`))
+receptionRouter.get('/', (req, res) => res.redirect(`/recepcao/kanban`))
 
 // ═══════════════════════════════════════════════════════════════
 //  PAINEL DO BARBEIRO (/barbeiro/*)
 // ═══════════════════════════════════════════════════════════════
 
+barbeiroRouter.use(attachBarbeiroUser)
+
+barbeiroRouter.get('/', (req, res) => res.redirect('/barbeiro/agenda'))
+
 barbeiroRouter.post('/logout', express.urlencoded({ extended: false }), (req, res) => {
-  if (req.barbeiro?.sessionId) deletarSessaoBarbeiro(req.barbeiro.sessionId)
-  clearBarberSessionCookie(res)
-  res.redirect('/painel/login')
+  req.session.destroy(() => res.redirect('/login'))
 })
 
 barbeiroRouter.get('/senha', (req, res) => {
@@ -5133,12 +5100,12 @@ barbeiroRouter.post('/senha', express.urlencoded({ extended: false }), (req, res
   if (!atual || !nova || !confirma) return res.redirect('/barbeiro/senha?msg=err_atual')
   if (String(nova).length < 6) return res.redirect('/barbeiro/senha?msg=err_curta')
   if (nova !== confirma) return res.redirect('/barbeiro/senha?msg=err_match')
-  const barbeiroDb = getBarbeiroById(b.id)
-  if (!barbeiroDb || !bcrypt.compareSync(atual, barbeiroDb.senha_hash)) {
+  const usuario = getUsuarioPorUsername(b.username)
+  if (!usuario || !verificarSenha(atual, usuario.senha_hash)) {
     return res.redirect('/barbeiro/senha?msg=err_atual')
   }
   const novoHash = bcrypt.hashSync(nova, 10)
-  updateBarbeiro(b.id, { senha_hash: novoHash })
+  atualizarSenhaUsuario(b.username, novoHash)
   log(`Barbeiro ${b.id} trocou a senha`)
   res.redirect('/barbeiro/senha?msg=ok')
 })
@@ -5397,12 +5364,4 @@ barbeiroRouter.get('/financeiro', (req, res) => {
   res.send(shellBarbeiro('financeiro', 'Meu Financeiro', body, b, script))
 })
 
-// Mounta /painel (login), recepção e área do barbeiro no app Express.
-// Deve ser chamado após createExpressApp() pois essas rotas ficam fora do prefixo do admin.
-export function registrarRotasPublicasPainel(appInstance) {
-  appInstance.use('/painel', loginRouter)
-  appInstance.use(`/${RECEPTION_SECRET}`, receptionRouter)
-  appInstance.use('/barbeiro', barbeiroRouter)
-}
-
-export { router as panelRouter, loginRouter, receptionRouter, barbeiroRouter, SECRET, RECEPTION_SECRET }
+export { router as panelRouter, receptionRouter, barbeiroRouter }

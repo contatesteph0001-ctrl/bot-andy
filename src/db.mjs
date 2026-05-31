@@ -406,6 +406,48 @@ export function runMigrations() {
   addColumnIfMissing('agendamentos', 'presenca_confirmada_at', 'TEXT')
   addColumnIfMissing('agendamentos', 'no_show_marcado_at', 'TEXT')
   runFinanceiroMigrations()
+  runUsuariosMigrations()
+}
+
+function runUsuariosMigrations() {
+  getDb().exec(`
+    CREATE TABLE IF NOT EXISTS usuarios (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT NOT NULL UNIQUE,
+      senha_hash TEXT NOT NULL,
+      papel TEXT NOT NULL,
+      staff_id TEXT,
+      nome TEXT,
+      ativo INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_usuarios_username ON usuarios(username);
+    CREATE INDEX IF NOT EXISTS idx_usuarios_staff ON usuarios(staff_id);
+  `)
+}
+
+export function getUsuarioPorUsername(username) {
+  return getDb()
+    .prepare(`SELECT * FROM usuarios WHERE username = ? AND ativo = 1`)
+    .get(username)
+}
+
+export function getUsuarioPorStaffId(staffId) {
+  return getDb()
+    .prepare(`SELECT * FROM usuarios WHERE staff_id = ? AND ativo = 1 LIMIT 1`)
+    .get(staffId)
+}
+
+export function listarUsuarios() {
+  return getDb()
+    .prepare(`SELECT id, username, papel, staff_id, nome, ativo, created_at FROM usuarios ORDER BY papel, username`)
+    .all()
+}
+
+export function atualizarSenhaUsuario(username, senhaHash) {
+  getDb()
+    .prepare(`UPDATE usuarios SET senha_hash = ? WHERE username = ? AND ativo = 1`)
+    .run(senhaHash, username)
 }
 
 // ═══════════════════════════════════════════════════════════════

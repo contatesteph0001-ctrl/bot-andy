@@ -26,6 +26,7 @@ import {
   registrarInteresseProduto,
   registrarSinalRecebido,
   getConfig,
+  getUsuarioPorStaffId,
   enfileirarMensagem,
   incrementarNoShowParcial,
   registrarNoShow,
@@ -86,6 +87,8 @@ function buildSlotISO(dateStr, timeStr) {
 }
 
 function staffNameById(id) {
+  const u = getUsuarioPorStaffId(id)
+  if (u?.nome) return u.nome
   return staff.find(s => s.id === id)?.name || id
 }
 
