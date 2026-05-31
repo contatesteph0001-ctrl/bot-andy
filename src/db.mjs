@@ -9,7 +9,7 @@ import { nowIsoBRT, nowIsoBRTOffsetMinutes } from './time.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const DATA_DIR  = path.join(__dirname, '..', 'data')
-const DB_PATH   = path.join(DATA_DIR, 'chatbot.db')
+const DB_PATH   = process.env.DB_PATH || path.join(DATA_DIR, 'chatbot.db')
 
 let db = null
 
@@ -876,7 +876,7 @@ export function getFaturamentoDia(data) {
       SELECT a.*, s.nome AS servico_nome, s.preco AS servico_preco
       FROM agendamentos a
       LEFT JOIN servicos s ON s.id = a.servico_id
-      WHERE date(a.data_hora_inicio) = ?
+      WHERE date(a.data_hora_inicio, '-03:00') = ?
         AND a.status IN ('confirmado', 'concluido')
       ORDER BY a.data_hora_inicio ASC
     `)
@@ -907,7 +907,7 @@ export function getAgendamentosDia(data, staffId = null) {
     FROM agendamentos a
     LEFT JOIN clientes c ON c.whatsapp_number = a.whatsapp_number
     LEFT JOIN servicos s ON s.id = a.servico_id
-    WHERE date(a.data_hora_inicio) = ?
+    WHERE date(a.data_hora_inicio, '-03:00') = ?
       AND a.status IN ('confirmado', 'concluido')
   `
   const params = [data]
@@ -933,7 +933,7 @@ export function getAgendamentosKanban(data) {
       FROM agendamentos a
       LEFT JOIN servicos s ON a.servico_id = s.id
       LEFT JOIN clientes c ON c.whatsapp_number = a.whatsapp_number
-      WHERE date(a.data_hora_inicio) = date(?) -- TZ-FIX: offset já está em data_hora_inicio
+      WHERE date(a.data_hora_inicio, '-03:00') = date(?)
       ORDER BY a.data_hora_inicio ASC
     `)
     .all(data)

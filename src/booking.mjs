@@ -10,6 +10,7 @@ import { staff, schedule, business } from './config.mjs'
 import { findFreeSlots, getNextAvailableAcrossStaff } from './calendar.mjs'
 import { criarAgendamentoTool } from './tools.mjs'
 import { enfileirarMensagem, getServicosAtivos, getServico, getConfig } from './db.mjs'
+import { isoBRT } from './time.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const publicDir = path.join(__dirname, '..', 'public')
@@ -122,10 +123,11 @@ bookingRouter.get('/api/disponibilidade', async (req, res) => {
 // POST /api/agendar
 bookingRouter.post('/api/agendar', express.json(), async (req, res) => {
   try {
-    const { nome, whatsapp, servico_id, staff_id, start_iso } = req.body || {}
+    let { nome, whatsapp, servico_id, staff_id, start_iso } = req.body || {}
     if (!nome || !whatsapp || !servico_id || !staff_id || !start_iso) {
       return res.status(400).json({ erro: 'campos obrigatórios faltando' })
     }
+    start_iso = isoBRT(new Date(start_iso))
 
     const numeroLimpo = String(whatsapp).replace(/\D/g, '')
     if (numeroLimpo.length < 10 || numeroLimpo.length > 13) {

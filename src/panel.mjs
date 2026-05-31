@@ -26,6 +26,7 @@ import { deleteEvent, createEvent, findFreeSlots } from './calendar.mjs'
 import { criarAgendamentoTool } from './tools.mjs'
 import { staff, schedule } from './config.mjs'
 import { log } from './logger.mjs'
+import { isoBRT } from './time.mjs'
 import { M } from './messages.mjs'
 
 const router = Router()
@@ -1756,7 +1757,7 @@ function editarAgendaPostHandler(secret) {
 
     const start_iso = `${data}T${horario}:00-03:00`
     const endDate = new Date(new Date(start_iso).getTime() + servico.duracao_minutos * 60000)
-    const end_iso = endDate.toISOString()
+    const end_iso = isoBRT(endDate)
 
     try {
       if (ag.google_event_id) {

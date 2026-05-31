@@ -19,3 +19,11 @@ export function nowIsoBRTOffsetMinutes(offsetMinutes) {
 export function todayBRT() {
   return new Date().toLocaleDateString('en-CA', { timeZone: TZ })
 }
+
+// Converte um Date/instante para string ISO com offset -03:00 (sem milissegundos).
+// Preserva o INSTANTE real; só muda a representação para o fuso BRT.
+export function isoBRT(date) {
+  const d = (date instanceof Date) ? date : new Date(date)
+  const s = d.toLocaleString('sv-SE', { timeZone: TZ }).replace(' ', 'T')
+  return `${s}-03:00`
+}

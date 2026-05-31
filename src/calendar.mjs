@@ -2,6 +2,7 @@ import { google }   from 'googleapis'
 import { getConfig } from './db.mjs'
 import { staff, schedule, BUFFER_MINUTES, timezone } from './config.mjs'
 import { log, error as logError } from './logger.mjs'
+import { isoBRT } from './time.mjs'
 
 // ── OAuth client ─────────────────────────────────────────────────
 function getOAuth2Client() {
@@ -163,8 +164,8 @@ export async function findFreeSlots(staffId, date, durationMinutes) {
 
       if (!hasConflict) {
         slots.push({
-          start: current.toISOString(),
-          end:   slotEnd.toISOString(),
+          start: isoBRT(current),
+          end:   isoBRT(slotEnd),
           label: current.toLocaleTimeString('pt-BR', {
             hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo',
           }),

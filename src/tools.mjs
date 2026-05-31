@@ -32,6 +32,7 @@ import {
 } from './db.mjs'
 
 import { staff, schedule, upsellMap, MIN_ADVANCE_MINUTES, MAX_DAILY_ACTIVE_MESSAGES } from './config.mjs'
+import { isoBRT } from './time.mjs'
 import { log, warn, error as logError } from './logger.mjs'
 
 function validarWhatsappNumber(numero) {
@@ -200,6 +201,7 @@ export async function criarAgendamentoTool({ whatsapp_number, cliente_nome, staf
       logError('Tool rejeitada: whatsapp_number inválido', whatsapp_number)
       return { erro: 'Número de WhatsApp inválido ou ausente.' }
     }
+    start_iso = isoBRT(new Date(start_iso))
     const servico = getServico(servico_id)
     if (!servico) return { sucesso: false, erro: `Serviço "${servico_id}" não encontrado.` }
 
@@ -243,7 +245,7 @@ export async function criarAgendamentoTool({ whatsapp_number, cliente_nome, staf
       }
     }
 
-    const endISO = new Date(new Date(start_iso).getTime() + servico.duracao_minutos * 60000).toISOString()
+    const endISO = isoBRT(new Date(new Date(start_iso).getTime() + servico.duracao_minutos * 60000))
 
     // Verifica de novo antes de criar (race condition)
     const ainda_livre = await isSlotAvailable(staff_id, start_iso, servico.duracao_minutos)
