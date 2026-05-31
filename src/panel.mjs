@@ -20,7 +20,7 @@ import {
   getOuCriarCaixaDia, definirFundoInicial, registrarPagamentoCaixa,
   estornarPagamentoCaixa, getResumoCaixaDia, fecharCaixaDia,
   reabrirCaixaDia,   listarCaixas, registrarVendaProdutoAvulsa,
-  getUsuarioPorUsername, getUsuarioPorStaffId, atualizarSenhaUsuario,
+  getUsuarioPorUsername, getUsuarioPorStaffId, getUsuarioPorId, atualizarSenhaUsuario,
 } from './db.mjs'
 import { deleteEvent, createEvent, findFreeSlots } from './calendar.mjs'
 import { criarAgendamentoTool } from './tools.mjs'
@@ -755,7 +755,10 @@ function shell(page, title, subtitle, body, script = '', panelPrefix = 'admin') 
       <div class="sidebar-footer">
         <div class="pulse"></div>
         Online · ${hora} · ${dataHoje}
-        <a href="/logout" style="display:block;margin-top:.5rem;color:var(--muted);font-size:.72rem">Sair</a>
+        <div style="margin-top:.5rem;display:flex;flex-wrap:wrap;gap:.65rem;font-size:.72rem">
+          <a href="/${panelPrefix}/conta/senha" style="color:var(--muted)">Trocar senha</a>
+          <a href="/logout" style="color:var(--muted)">Sair</a>
+        </div>
       </div>
     </div>
   </aside>
@@ -1282,9 +1285,9 @@ function shellBarbeiro(page, title, body, barbeiro, script = '', extraHead = '')
     { id: 'inicio', label: 'Início', icon: ic.cal, href: '/barbeiro/inicio' },
     { id: 'agenda', label: 'Minha Agenda', icon: ic.cal, href: '/barbeiro/agenda' },
     { id: 'financeiro', label: 'Meu Financeiro', icon: ic.money, href: '/barbeiro/financeiro' },
-    { id: 'senha', label: 'Trocar Senha', icon: ic.lock, href: '/barbeiro/senha' },
+    { id: 'conta/senha', label: 'Trocar Senha', icon: ic.lock, href: '/barbeiro/conta/senha' },
   ]
-  const isActive = (id) => page === id || (id === 'financeiro' && page.startsWith('financeiro'))
+  const isActive = (id) => page === id || (id === 'financeiro' && page.startsWith('financeiro')) || (id === 'conta/senha' && page.startsWith('conta/'))
   const navBottom = nav
     .map(
       (n) => `
@@ -1321,7 +1324,8 @@ ${extraHead}
       Olá, ${escapeHtml(barbeiro.nome)}
       <span>${escapeHtml(title)}</span>
     </div>
-    <div class="barber-header-actions">
+    <div class="barber-header-actions" style="display:flex;align-items:center;gap:.5rem">
+      <a href="/barbeiro/conta/senha" class="barber-logout" style="text-decoration:none">Trocar senha</a>
       <form method="POST" action="/barbeiro/logout" style="margin:0">
         <button type="submit" class="barber-logout" aria-label="Sair">Sair</button>
       </form>
@@ -1424,6 +1428,117 @@ export function attachBarbeiroUser(req, res, next) {
     comissao_padrao_pct: fin?.comissao_padrao_pct ?? 0,
   }
   next()
+}
+
+function painelHomeHref(panelPrefix) {
+  if (panelPrefix === 'admin') return '/admin/kanban'
+  if (panelPrefix === 'recepcao') return '/recepcao/kanban'
+  return '/barbeiro/agenda'
+}
+
+function renderTrocarSenhaAlertas(msg) {
+  if (msg === 'ok') {
+    return `<div class="alert alert-success">${ic.check} Senha alterada com sucesso.</div>`
+  }
+  if (msg === 'atual') {
+    return `<div class="alert" style="background:var(--red-sem-dim);border:1px solid rgba(239,68,68,.3);color:var(--red-sem);padding:.7rem 1rem;border-radius:var(--radius-sm);font-size:.8rem;margin-bottom:1rem">${ic.warn} Senha atual incorreta.</div>`
+  }
+  if (msg === 'curta') {
+    return `<div class="alert" style="background:var(--amber-dim);border:1px solid rgba(245,158,11,.3);color:var(--amber);padding:.7rem 1rem;border-radius:var(--radius-sm);font-size:.8rem;margin-bottom:1rem">${ic.warn} A nova senha deve ter no mínimo 6 caracteres.</div>`
+  }
+  if (msg === 'naoconfere') {
+    return `<div class="alert" style="background:var(--amber-dim);border:1px solid rgba(245,158,11,.3);color:var(--amber);padding:.7rem 1rem;border-radius:var(--radius-sm);font-size:.8rem;margin-bottom:1rem">${ic.warn} A confirmação não confere com a nova senha.</div>`
+  }
+  return ''
+}
+
+function renderTrocarSenhaAlertasBarbeiro(msg) {
+  if (msg === 'ok') {
+    return `<div class="bb-alert" style="background:var(--green-dim);border-color:rgba(34,197,94,.35);color:var(--green)">${ic.check} Senha alterada com sucesso.</div>`
+  }
+  if (msg === 'atual') return `<div class="bb-alert">${ic.warn} Senha atual incorreta.</div>`
+  if (msg === 'curta') return `<div class="bb-alert">${ic.warn} A nova senha deve ter no mínimo 6 caracteres.</div>`
+  if (msg === 'naoconfere') return `<div class="bb-alert">${ic.warn} A confirmação não confere com a nova senha.</div>`
+  return ''
+}
+
+function trocarSenhaGetHandler(panelPrefix) {
+  return (req, res) => {
+    const u = req.session?.user
+    if (!u) return res.redirect('/login')
+    const msg = req.query.msg || ''
+    const body = `
+      ${renderTrocarSenhaAlertas(msg)}
+      <div class="form-card" style="max-width:420px">
+        <div class="form-card-title">${ic.lock} Alterar senha</div>
+        <form method="POST" action="/${panelPrefix}/conta/senha" style="display:flex;flex-direction:column;gap:.75rem">
+          <div class="form-group" style="margin:0">
+            <label class="form-label" for="senha_atual">Senha atual</label>
+            <input type="password" id="senha_atual" name="senha_atual" required autocomplete="current-password">
+          </div>
+          <div class="form-group" style="margin:0">
+            <label class="form-label" for="nova_senha">Nova senha (mínimo 6 caracteres)</label>
+            <input type="password" id="nova_senha" name="nova_senha" required minlength="6" autocomplete="new-password">
+          </div>
+          <div class="form-group" style="margin:0">
+            <label class="form-label" for="confirmar_nova">Confirmar nova senha</label>
+            <input type="password" id="confirmar_nova" name="confirmar_nova" required minlength="6" autocomplete="new-password">
+          </div>
+          <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.25rem">
+            <button type="submit" class="btn btn-primary">${ic.check} Salvar</button>
+            <a href="${painelHomeHref(panelPrefix)}" class="btn btn-ghost">${ic.back} Voltar</a>
+          </div>
+        </form>
+      </div>`
+
+    if (panelPrefix === 'barbeiro') {
+      const b = req.barbeiro || { nome: u.nome, id: u.staff_id, username: u.username }
+      const bbBody = `
+        <h1 class="barber-page-title">Trocar senha</h1>
+        ${renderTrocarSenhaAlertasBarbeiro(msg)}
+        <form method="POST" action="/barbeiro/conta/senha" class="bb-section" style="display:flex;flex-direction:column;gap:.75rem">
+          <div class="form-group" style="margin:0">
+            <label class="form-label" for="senha_atual">Senha atual</label>
+            <input type="password" id="senha_atual" name="senha_atual" required autocomplete="current-password" style="min-height:44px;font-size:16px">
+          </div>
+          <div class="form-group" style="margin:0">
+            <label class="form-label" for="nova_senha">Nova senha (mínimo 6 caracteres)</label>
+            <input type="password" id="nova_senha" name="nova_senha" required minlength="6" autocomplete="new-password" style="min-height:44px;font-size:16px">
+          </div>
+          <div class="form-group" style="margin:0">
+            <label class="form-label" for="confirmar_nova">Confirmar nova senha</label>
+            <input type="password" id="confirmar_nova" name="confirmar_nova" required minlength="6" autocomplete="new-password" style="min-height:44px;font-size:16px">
+          </div>
+          <button type="submit" class="btn btn-primary" style="min-height:48px;justify-content:center;margin-top:.5rem">${ic.check} Salvar nova senha</button>
+          <a href="/barbeiro/agenda" class="btn btn-ghost" style="justify-content:center">${ic.back} Voltar</a>
+        </form>`
+      return res.send(shellBarbeiro('conta/senha', 'Trocar Senha', bbBody, b))
+    }
+
+    return res.send(shell('conta/senha', 'Trocar Senha', `Usuário: ${escapeHtml(u.username)}`, body, '', panelPrefix))
+  }
+}
+
+function trocarSenhaPostHandler(panelPrefix) {
+  return (req, res) => {
+    const sess = req.session?.user
+    if (!sess) return res.redirect('/login')
+    const { senha_atual, nova_senha, confirmar_nova } = req.body || {}
+    const base = `/${panelPrefix}/conta/senha`
+    const user = getUsuarioPorId(sess.id)
+    if (!user) return res.redirect('/login')
+    if (!senha_atual || !verificarSenha(senha_atual, user.senha_hash)) {
+      return res.redirect(`${base}?msg=atual`)
+    }
+    if (!nova_senha || String(nova_senha).length < 6) {
+      return res.redirect(`${base}?msg=curta`)
+    }
+    if (nova_senha !== confirmar_nova) {
+      return res.redirect(`${base}?msg=naoconfere`)
+    }
+    atualizarSenhaUsuario(user.id, bcrypt.hashSync(nova_senha, 10))
+    return res.redirect(`${base}?msg=ok`)
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1601,6 +1716,11 @@ function agendaHandler(panelPrefix) {
 
 router.get('/agenda', agendaHandler('admin'))
 receptionRouter.get('/agenda', agendaHandler('recepcao'))
+
+router.get('/conta/senha', trocarSenhaGetHandler('admin'))
+router.post('/conta/senha', express.urlencoded({ extended: false }), trocarSenhaPostHandler('admin'))
+receptionRouter.get('/conta/senha', trocarSenhaGetHandler('recepcao'))
+receptionRouter.post('/conta/senha', express.urlencoded({ extended: false }), trocarSenhaPostHandler('recepcao'))
 
 function cancelarHandler(secret) {
   return async (req, res) => {
@@ -5061,54 +5181,9 @@ barbeiroRouter.post('/logout', express.urlencoded({ extended: false }), (req, re
   req.session.destroy(() => res.redirect('/login'))
 })
 
-barbeiroRouter.get('/senha', (req, res) => {
-  const b = req.barbeiro
-  const msg = req.query.msg || ''
-  const alerta = msg === 'ok'
-    ? `<div class="bb-alert" style="background:var(--green-dim);border-color:rgba(34,197,94,.35);color:var(--green)">${ic.check} Senha alterada com sucesso!</div>`
-    : msg === 'err_atual' ? `<div class="bb-alert">${ic.warn} Senha atual incorreta</div>`
-    : msg === 'err_curta' ? `<div class="bb-alert">${ic.warn} A nova senha deve ter no mínimo 6 caracteres</div>`
-    : msg === 'err_match' ? `<div class="bb-alert">${ic.warn} As senhas não conferem</div>`
-    : ''
-  const body = `
-    <h1 class="barber-page-title">Trocar senha</h1>
-    ${alerta}
-    <form method="POST" action="/barbeiro/senha" class="bb-section" style="display:flex;flex-direction:column;gap:.75rem">
-      <div class="form-group" style="margin:0">
-        <label class="form-label" for="atual">Senha atual</label>
-        <input type="password" id="atual" name="atual" required autocomplete="current-password" style="min-height:44px;font-size:16px">
-      </div>
-      <div class="form-group" style="margin:0">
-        <label class="form-label" for="nova">Nova senha (mínimo 6 caracteres)</label>
-        <input type="password" id="nova" name="nova" required minlength="6" autocomplete="new-password" style="min-height:44px;font-size:16px">
-      </div>
-      <div class="form-group" style="margin:0">
-        <label class="form-label" for="confirma">Confirmar nova senha</label>
-        <input type="password" id="confirma" name="confirma" required minlength="6" autocomplete="new-password" style="min-height:44px;font-size:16px">
-      </div>
-      <button type="submit" class="btn btn-primary" style="min-height:48px;justify-content:center;margin-top:.5rem">
-        ${ic.check} Salvar nova senha
-      </button>
-    </form>
-  `
-  res.send(shellBarbeiro('senha', 'Trocar Senha', body, b))
-})
-
-barbeiroRouter.post('/senha', express.urlencoded({ extended: false }), (req, res) => {
-  const b = req.barbeiro
-  const { atual, nova, confirma } = req.body || {}
-  if (!atual || !nova || !confirma) return res.redirect('/barbeiro/senha?msg=err_atual')
-  if (String(nova).length < 6) return res.redirect('/barbeiro/senha?msg=err_curta')
-  if (nova !== confirma) return res.redirect('/barbeiro/senha?msg=err_match')
-  const usuario = getUsuarioPorUsername(b.username)
-  if (!usuario || !verificarSenha(atual, usuario.senha_hash)) {
-    return res.redirect('/barbeiro/senha?msg=err_atual')
-  }
-  const novoHash = bcrypt.hashSync(nova, 10)
-  atualizarSenhaUsuario(b.username, novoHash)
-  log(`Barbeiro ${b.id} trocou a senha`)
-  res.redirect('/barbeiro/senha?msg=ok')
-})
+barbeiroRouter.get('/senha', (req, res) => res.redirect('/barbeiro/conta/senha'))
+barbeiroRouter.get('/conta/senha', trocarSenhaGetHandler('barbeiro'))
+barbeiroRouter.post('/conta/senha', express.urlencoded({ extended: false }), trocarSenhaPostHandler('barbeiro'))
 
 barbeiroRouter.get('/financeiro/dados', (req, res) => {
   const de = req.query.de

@@ -438,16 +438,22 @@ export function getUsuarioPorStaffId(staffId) {
     .get(staffId)
 }
 
+export function getUsuarioPorId(id) {
+  return getDb()
+    .prepare(`SELECT * FROM usuarios WHERE id = ? AND ativo = 1`)
+    .get(id)
+}
+
 export function listarUsuarios() {
   return getDb()
     .prepare(`SELECT id, username, papel, staff_id, nome, ativo, created_at FROM usuarios ORDER BY papel, username`)
     .all()
 }
 
-export function atualizarSenhaUsuario(username, senhaHash) {
-  getDb()
-    .prepare(`UPDATE usuarios SET senha_hash = ? WHERE username = ? AND ativo = 1`)
-    .run(senhaHash, username)
+export function atualizarSenhaUsuario(id, senhaHash) {
+  return getDb()
+    .prepare(`UPDATE usuarios SET senha_hash = ? WHERE id = ? AND ativo = 1`)
+    .run(senhaHash, id)
 }
 
 // ═══════════════════════════════════════════════════════════════

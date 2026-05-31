@@ -18,6 +18,7 @@ import { detectarRespostaConfirmacao, notificarAndy } from './reminders.mjs'
 import { getAgendamentosFuturosCliente, marcarConfirmadoPeloCliente, cancelarAgendamento } from './db.mjs'
 import { deleteEvent } from './calendar.mjs'
 import session from 'express-session'
+import BetterSqliteStore from 'better-sqlite3-session-store'
 import {
   panelRouter,
   receptionRouter,
@@ -26,7 +27,7 @@ import {
   handleLoginPost,
 } from './panel.mjs'
 import { requireAuth, requireRole, redirectPosLogin, currentUser } from './auth.mjs'
-import { getUsuarioPorStaffId } from './db.mjs'
+import { getUsuarioPorStaffId, getDb } from './db.mjs'
 import { bookingRouter } from './booking.mjs'
 import { registerSender } from './queue.mjs'
 import { temDadoSensivel, sanitizarTexto, tentativaInjection } from './security.mjs'
@@ -164,7 +165,9 @@ export function createExpressApp() {
   if (!sessionSecret) {
     throw new Error('SESSION_SECRET é obrigatório em produção (NODE_ENV=production)')
   }
+  const SqliteStore = BetterSqliteStore(session)
   app.use(session({
+    store: new SqliteStore({ client: getDb() }),
     secret: sessionSecret,
     resave: false,
     saveUninitialized: false,
@@ -174,7 +177,6 @@ export function createExpressApp() {
       secure: isProd,
       maxAge: 7 * 24 * 60 * 60 * 1000,
     },
-    // MemoryStore: deploy/restart desloga todos os usuários
   }))
 
   app.get('/login', renderLoginPage)
