@@ -106,21 +106,6 @@ async function analyzeImage(mediaBuffer, mimeType = 'image/jpeg') {
 export function getClient() { return client }
 
 export function createExpressApp() {
-  app.get('/qr', (req, res) => {
-    if (!app._qr) return res.send('<p>Aguarde o QR...</p><script>setTimeout(()=>location.reload(),3000)</script>')
-    res.send(`<img src="${app._qr}" style="width:300px"><p>Escaneie com o WhatsApp</p>`)
-  })
-
-  app.get('/', (req, res) => {
-    res.send(`
-      <h1>Andy Na Régua — Chatbot</h1>
-      <p>Status: ${client ? '✅ Conectado' : '⏳ Aguardando'}</p>
-      <p>Conversas ativas: ${getActiveConversationCount()}</p>
-      <a href="/qr">QR Code</a>
-    `)
-  })
-
-
   // ── Rate limit global — protege contra abuso e custos inesperados ─
   const _rlWindowMs = 60_000 // janela de 1 minuto
   const _rlMap = new Map()
@@ -180,6 +165,20 @@ export function createExpressApp() {
       maxAge: 7 * 24 * 60 * 60 * 1000,
     },
   }))
+
+  app.get('/qr', requireAuth, requireRole('admin'), (req, res) => {
+    if (!app._qr) return res.send('<p>Aguarde o QR...</p><script>setTimeout(()=>location.reload(),3000)</script>')
+    res.send(`<img src="${app._qr}" style="width:300px"><p>Escaneie com o WhatsApp</p>`)
+  })
+
+  app.get('/', requireAuth, requireRole('admin'), (req, res) => {
+    res.send(`
+      <h1>Andy Na Régua — Chatbot</h1>
+      <p>Status: ${client ? '✅ Conectado' : '⏳ Aguardando'}</p>
+      <p>Conversas ativas: ${getActiveConversationCount()}</p>
+      <a href="/qr">QR Code</a>
+    `)
+  })
 
   app.get('/login', renderLoginPage)
   app.post('/login', handleLoginPost)
