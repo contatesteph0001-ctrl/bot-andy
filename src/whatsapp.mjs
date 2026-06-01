@@ -161,6 +161,8 @@ export function createExpressApp() {
   app.use(express.urlencoded({ extended: true }))
 
   const isProd = process.env.NODE_ENV === 'production'
+  // Railway/proxy: sem isto, req.protocol é 'http' e o cookie secure:true NUNCA é setado → sessão não persiste.
+  if (isProd) app.set('trust proxy', 1)
   const sessionSecret = process.env.SESSION_SECRET || (isProd ? null : 'dev-session-secret-change-me')
   if (!sessionSecret) {
     throw new Error('SESSION_SECRET é obrigatório em produção (NODE_ENV=production)')
