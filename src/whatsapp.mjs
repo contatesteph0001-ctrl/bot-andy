@@ -180,7 +180,7 @@ export function createExpressApp() {
   }))
 
   app.get('/login', renderLoginPage)
-  app.post('/login', express.urlencoded({ extended: false }), handleLoginPost)
+  app.post('/login', handleLoginPost)
   const logoutHandler = (req, res) => {
     req.session.destroy(() => res.redirect('/login'))
   }
