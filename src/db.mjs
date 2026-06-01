@@ -737,7 +737,7 @@ export function getAgendamentosParaUpsellPosServico() {
       SELECT a.*, c.nome as nome_cliente
       FROM agendamentos a
       LEFT JOIN clientes c ON c.whatsapp_number = a.whatsapp_number
-      WHERE a.status = 'confirmado'
+      WHERE a.status = 'concluido'
         AND a.upsell_pos_servico_enviado = 0
         AND a.data_hora_fim <= ?
         AND a.data_hora_fim >= ?
@@ -1436,7 +1436,7 @@ export function getAgendamentosParaFeedback() {
   return getDb().prepare(`
     SELECT a.*, c.nome as nome_cliente FROM agendamentos a
     LEFT JOIN clientes c ON c.whatsapp_number = a.whatsapp_number
-    WHERE a.status IN ('confirmado', 'concluido')
+    WHERE a.status = 'concluido'
       AND a.feedback_enviado_at IS NULL
       AND datetime(a.data_hora_fim, '+1 hours') <= ?
       AND datetime(a.data_hora_fim, '+6 hours') >= ?
