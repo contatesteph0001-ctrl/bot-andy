@@ -23,6 +23,7 @@ import {
   getConfig,
   upsertCliente,
   getAgendamentosFuturosCliente,
+  listarBarbeiros,
 } from './db.mjs'
 import { M } from './messages.mjs'
 import { log, error as logError } from './logger.mjs'
@@ -297,7 +298,9 @@ export async function askClaude(userMessage, whatsappNumber) {
 
   const foraHorario = !estaAberto()
   const perfil = cliente?.nome ? getPerfilProgressivo(whatsappNumber) : null
-  const systemPrompt = buildSystemPrompt(cliente?.nome, perfil, { fora_horario: foraHorario })
+  const barbeiros = listarBarbeiros()
+  const staffNomesDB = Object.fromEntries(barbeiros.map(b => [b.id, b.nome]))
+  const systemPrompt = buildSystemPrompt(cliente?.nome, perfil, { fora_horario: foraHorario }, staffNomesDB)
 
   if (resumoUsar) {
     messagesArray = [

@@ -35,7 +35,7 @@ export const staff = [
   },
   {
     id:             'barbeiro3',
-    name:           'Douglas',
+    name:           'Barbeiro 3',
     calendarEnvKey: 'GOOGLE_CALENDAR_ID_BARBEIRO3',
     active:         true,
   },
@@ -394,7 +394,7 @@ export const upsellMap = {
 }
 
 // ── System prompt base ────────────────────────────────────────────
-export function buildSystemPrompt(clienteName = null, perfilCliente = null, contextoExtra = {}) {
+export function buildSystemPrompt(clienteName = null, perfilCliente = null, contextoExtra = {}, staffNomesDB = null) {
   const saudacao = clienteName ? `O cliente se chama ${clienteName}.` : 'Ainda não sabemos o nome do cliente — pergunte de forma natural.'
 
   // Data e hora atual injetada dinamicamente
@@ -404,7 +404,10 @@ export function buildSystemPrompt(clienteName = null, perfilCliente = null, cont
   const anoAtual  = agora.getFullYear()
 
   // IDs dos barbeiros gerados dinamicamente do staff
-  const staffIds = staff.filter(s => s.active).map(s => `- ${s.name}: staff_id = "${s.id}"`).join('\n')
+  const staffIds = staff.filter(s => s.active).map(s => {
+    const nomeReal = staffNomesDB?.[s.id] || s.name
+    return `- ${nomeReal}: staff_id = "${s.id}"`
+  }).join('\n')
 
   const perfilBloco = perfilCliente ? `
 <perfil_cliente>

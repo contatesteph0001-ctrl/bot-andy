@@ -1548,6 +1548,8 @@ export function listarBarbeiros() {
 /** Troca o barbeiro de uma cadeira (staff_id fixo). */
 export function trocarBarbeiro(staffId, novoNome, novaSenha, limparAgendamentosFuturos) {
   const db = getDb()
+  const existe = db.prepare('SELECT id FROM barbeiros WHERE id = ?').get(staffId)
+  if (!existe) throw new Error(`Barbeiro "${staffId}" não encontrado no banco.`)
   const senhaHash = bcrypt.hashSync(novaSenha, 10)
   const now = nowIsoBRT()
 
