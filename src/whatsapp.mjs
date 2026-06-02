@@ -34,6 +34,7 @@ import { temDadoSensivel, sanitizarTexto, tentativaInjection } from './security.
 import { M } from './messages.mjs'
 
 let client = null
+let BOT_CONNECTED_AT = null
 const app  = express()
 app.use(express.json())
 
@@ -166,6 +167,19 @@ export function createExpressApp() {
     },
   }))
 
+  app.post('/admin/limpar-banco-teste', requireAuth, requireRole('admin'), (req, res) => {
+    try {
+      const db = getDb()
+      db.prepare('DELETE FROM agendamentos').run()
+      db.prepare('DELETE FROM clientes').run()
+      db.prepare('DELETE FROM mensagens_log').run()
+      db.prepare('DELETE FROM mensagens_pendentes').run()
+      res.json({ ok: true, mensagem: 'Banco limpo com sucesso.' })
+    } catch (err) {
+      res.status(500).json({ ok: false, erro: err.message })
+    }
+  })
+
   app.get('/qr', requireAuth, requireRole('admin'), (req, res) => {
     if (!app._qr) return res.send('<p>Aguarde o QR...</p><script>setTimeout(()=>location.reload(),3000)</script>')
     res.send(`<img src="${app._qr}" style="width:300px"><p>Escaneie com o WhatsApp</p>`)
@@ -225,6 +239,7 @@ async function handleIncomingMessage(message) {
   if (message.isGroupMsg)              return
   if (message.from === 'status@broadcast') return
   if (message.fromMe)                  return
+  if (BOT_CONNECTED_AT && message.timestamp && message.timestamp < BOT_CONNECTED_AT) return
   // Serializa por número — evita respostas trocadas em conversas paralelas
   return enfileirarPorNumero(message.from, () => processarMensagem(message))
 }
@@ -469,6 +484,7 @@ export async function startWhatsApp() {
     },
   }).then((c) => {
     client = c
+    BOT_CONNECTED_AT = Math.floor(Date.now() / 1000)
     log('WhatsApp conectado — aguardando mensagens')
     client.onMessage(handleIncomingMessage)
     return c
