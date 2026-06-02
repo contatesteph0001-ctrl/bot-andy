@@ -27,7 +27,7 @@ import {
   handleLoginPost,
 } from './panel.mjs'
 import { requireAuth, requireRole, redirectPosLogin, currentUser } from './auth.mjs'
-import { getUsuarioPorStaffId, getDb } from './db.mjs'
+import { getUsuarioPorStaffId, getDb, listarBarbeiros, trocarBarbeiro } from './db.mjs'
 import { bookingRouter } from './booking.mjs'
 import { registerSender } from './queue.mjs'
 import { temDadoSensivel, sanitizarTexto, tentativaInjection } from './security.mjs'
@@ -166,6 +166,33 @@ export function createExpressApp() {
       maxAge: 7 * 24 * 60 * 60 * 1000,
     },
   }))
+
+  app.get('/admin/barbeiros', requireAuth, requireRole('admin'), (req, res) => {
+    res.json(listarBarbeiros())
+  })
+
+  app.post('/admin/barbeiros/:staffId/trocar', requireAuth, requireRole('admin'), express.urlencoded({ extended: true }), (req, res) => {
+    const { staffId } = req.params
+    const { novoNome, novaSenha, limparAgendamentos } = req.body
+
+    const staffsValidos = ['barbeiro1', 'barbeiro2', 'barbeiro3']
+    if (!staffsValidos.includes(staffId)) {
+      return res.status(400).json({ ok: false, erro: 'staffId inválido' })
+    }
+    if (!novoNome || typeof novoNome !== 'string' || novoNome.trim().length < 2) {
+      return res.status(400).json({ ok: false, erro: 'Nome inválido' })
+    }
+    if (!novaSenha || typeof novaSenha !== 'string' || novaSenha.length < 6) {
+      return res.status(400).json({ ok: false, erro: 'Senha deve ter no mínimo 6 caracteres' })
+    }
+
+    try {
+      trocarBarbeiro(staffId, novoNome.trim(), novaSenha, !!limparAgendamentos)
+      res.json({ ok: true, mensagem: `${staffId} atualizado para ${novoNome.trim()}` })
+    } catch (err) {
+      res.status(500).json({ ok: false, erro: err.message })
+    }
+  })
 
   app.post('/admin/limpar-banco-teste', requireAuth, requireRole('admin'), (req, res) => {
     try {

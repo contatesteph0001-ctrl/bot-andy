@@ -1534,6 +1534,44 @@ export function getBarbeiros() {
   return getDb().prepare(`SELECT * FROM barbeiros WHERE ativo = 1 ORDER BY id`).all()
 }
 
+/** barbeiro1/2/3 com dados de barbeiros + usuário vinculado (login). */
+export function listarBarbeiros() {
+  return getDb()
+    .prepare(`SELECT b.id, b.nome, b.comissao_padrao_pct, b.ativo,
+              u.username, u.nome as usuario_nome
+              FROM barbeiros b
+              LEFT JOIN usuarios u ON u.staff_id = b.id AND u.ativo = 1
+              ORDER BY b.id`)
+    .all()
+}
+
+/** Troca o barbeiro de uma cadeira (staff_id fixo). */
+export function trocarBarbeiro(staffId, novoNome, novaSenha, limparAgendamentosFuturos) {
+  const db = getDb()
+  const senhaHash = bcrypt.hashSync(novaSenha, 10)
+  const now = nowIsoBRT()
+
+  const trocar = db.transaction(() => {
+    db.prepare(`UPDATE barbeiros SET nome = ?, updated_at = ? WHERE id = ?`)
+      .run(novoNome, now, staffId)
+
+    db.prepare(`UPDATE usuarios SET nome = ?, senha_hash = ? WHERE staff_id = ? AND ativo = 1`)
+      .run(novoNome, senhaHash, staffId)
+
+    if (limparAgendamentosFuturos) {
+      db.prepare(`
+        UPDATE agendamentos
+        SET status = 'cancelado', updated_at = ?
+        WHERE staff_id = ?
+          AND status IN ('confirmado', 'em_atendimento')
+          AND data_hora_inicio > ?
+      `).run(now, staffId, now)
+    }
+  })
+
+  trocar()
+}
+
 export function getBarbeiroById(id) {
   return getDb().prepare(`SELECT * FROM barbeiros WHERE id = ?`).get(id)
 }

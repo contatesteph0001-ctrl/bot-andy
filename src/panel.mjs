@@ -704,6 +704,7 @@ function shell(page, title, subtitle, body, script = '', panelPrefix = 'admin') 
     { id:'estoque',                label:'Estoque',      icon:ic.box },
     { id:'servicos',               label:'Serviços',     icon:ic.cut },
     { id:'config',                 label:'Config',       icon:ic.gear },
+    { id:'gerenciar-barbeiros',    label:'Barbeiros',    icon:ic.users },
     { id:'aprovar-sinais',         label:'Sinais Pix',   icon:ic.money },
     { id:'eventos-bot',            label:'Métricas',     icon:ic.chart },
   ]
@@ -4989,6 +4990,103 @@ function configLabel(chave) {
   }
   return labels[chave] || chave.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())
 }
+
+router.get('/gerenciar-barbeiros', (req, res) => {
+  const body = `
+  <div class="section-header">
+    <span class="section-title">Gerenciar Barbeiros</span>
+    <span class="section-count">Cadeiras barbeiro1, barbeiro2, barbeiro3</span>
+  </div>
+  <p class="bb-muted" style="margin:0 0 1rem;font-size:.82rem;color:var(--muted)">
+    Troque o nome e a senha de login de cada cadeira. O login continua sendo o username fixo (barbeiro1, barbeiro2, barbeiro3).
+  </p>
+  <div id="gbLista" style="display:flex;flex-direction:column;gap:1rem"></div>`
+
+  const script = `
+  const STAFFS = ['barbeiro1', 'barbeiro2', 'barbeiro3'];
+  function gbEsc(s) {
+    return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+  function gbFeedback(el, ok, msg) {
+    el.textContent = msg;
+    el.className = 'gb-feedback ' + (ok ? 'ok' : 'err');
+    el.style.display = 'block';
+  }
+  function renderCard(b) {
+    const sid = gbEsc(b.id);
+  return \`
+    <div class="form-card" data-staff="\${sid}">
+      <div class="form-card-title">\${sid} — \${gbEsc(b.nome || '—')}</div>
+      <p style="font-size:.78rem;color:var(--muted);margin:0 0 .75rem">
+        Login: <strong>\${gbEsc(b.username || sid)}</strong>
+      </p>
+      <form class="gb-form" style="display:flex;flex-direction:column;gap:.65rem">
+        <div class="form-group" style="margin:0">
+          <label class="form-label">Nome</label>
+          <input type="text" name="novoNome" value="\${gbEsc(b.nome || '')}" required minlength="2" autocomplete="off">
+        </div>
+        <div class="form-group" style="margin:0">
+          <label class="form-label">Nova senha (mín. 6 caracteres)</label>
+          <input type="password" name="novaSenha" required minlength="6" autocomplete="new-password">
+        </div>
+        <label style="display:flex;align-items:flex-start;gap:.5rem;font-size:.78rem;color:var(--muted);cursor:pointer">
+          <input type="checkbox" name="limparAgendamentos" value="1" style="margin-top:.2rem">
+          <span><strong>Cancelar agendamentos futuros deste barbeiro</strong><br>
+          Isso cancelará todos os agendamentos futuros confirmados deste barbeiro.</span>
+        </label>
+        <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
+          <button type="submit" class="btn btn-primary btn-sm">Trocar barbeiro</button>
+          <span class="gb-feedback" style="display:none;font-size:.78rem"></span>
+        </div>
+      </form>
+    </div>\`;
+  }
+  async function carregarBarbeiros() {
+    const lista = document.getElementById('gbLista');
+    lista.innerHTML = '<p style="color:var(--muted)">Carregando…</p>';
+    try {
+      const r = await fetch('/admin/barbeiros');
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.erro || 'Erro ao carregar');
+      const map = Object.fromEntries((Array.isArray(data) ? data : []).map(b => [b.id, b]));
+      lista.innerHTML = STAFFS.map(id => renderCard(map[id] || { id, nome: '', username: id })).join('');
+      lista.querySelectorAll('.gb-form').forEach(form => {
+        form.addEventListener('submit', async (e) => {
+          e.preventDefault();
+          const card = form.closest('[data-staff]');
+          const staffId = card.dataset.staff;
+          const fb = form.querySelector('.gb-feedback');
+          const fd = new FormData(form);
+          const novoNome = fd.get('novoNome');
+          const novaSenha = fd.get('novaSenha');
+          const limparAgendamentos = fd.get('limparAgendamentos') === '1';
+          fb.style.display = 'none';
+          try {
+            const resp = await fetch('/admin/barbeiros/' + encodeURIComponent(staffId) + '/trocar', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+              body: new URLSearchParams({ novoNome, novaSenha, limparAgendamentos: limparAgendamentos ? '1' : '' }),
+            });
+            const res = await resp.json();
+            if (!resp.ok || !res.ok) throw new Error(res.erro || 'Erro ao trocar');
+            gbFeedback(fb, true, res.mensagem || 'Atualizado com sucesso.');
+            form.querySelector('[name="novaSenha"]').value = '';
+            await carregarBarbeiros();
+          } catch (err) {
+            gbFeedback(fb, false, err.message || 'Erro ao trocar barbeiro.');
+          }
+        });
+      });
+    } catch (err) {
+      lista.innerHTML = '<p style="color:var(--red-sem)">' + gbEsc(err.message) + '</p>';
+    }
+  }
+  document.head.insertAdjacentHTML('beforeend', '<style>.gb-feedback.ok{color:var(--green)}.gb-feedback.err{color:var(--red-sem)}</style>');
+  carregarBarbeiros();
+  `
+
+  res.send(shell('gerenciar-barbeiros', 'Gerenciar Barbeiros', 'Trocar nome e senha por cadeira', body, script))
+})
 
 router.get('/config', (req, res) => {
   const msg     = req.query.msg || ''
