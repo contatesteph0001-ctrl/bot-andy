@@ -9,7 +9,7 @@ import { fileURLToPath } from 'url'
 import { staff, schedule, business } from './config.mjs'
 import { findFreeSlots, getNextAvailableAcrossStaff } from './calendar.mjs'
 import { criarAgendamentoTool } from './tools.mjs'
-import { enfileirarMensagem, getServicosAtivos, getServico, getConfig } from './db.mjs'
+import { enfileirarMensagem, getServicosAtivos, getServico, getConfig, getProdutosAtivos } from './db.mjs'
 import { isoBRT } from './time.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -56,6 +56,18 @@ bookingRouter.get('/api/servicos', (req, res) => {
     categoryLabel: CATEGORY_LABELS[s.categoria] || s.categoria,
   }))
   res.json({ servicos })
+})
+
+// GET /api/produtos
+// Catálogo público (vitrine do site) — não reflete estoque, só produtos ativos.
+bookingRouter.get('/api/produtos', (req, res) => {
+  const produtos = getProdutosAtivos().map(p => ({
+    id: p.id,
+    nome: p.nome,
+    descricao: p.descricao,
+    preco: p.preco,
+  }))
+  res.json({ produtos })
 })
 
 // GET /api/barbeiros

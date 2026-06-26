@@ -864,6 +864,11 @@ export function getProdutosEmEstoque() {
   return getDb().prepare(`SELECT * FROM produtos WHERE estoque > 0 AND ativo = 1`).all()
 }
 
+// Catálogo público do site (vitrine) — não reflete estoque, só produtos ativos.
+export function getProdutosAtivos() {
+  return getDb().prepare(`SELECT * FROM produtos WHERE ativo = 1 ORDER BY nome`).all()
+}
+
 export function atualizarEstoque(id, quantidade) {
   getDb()
     .prepare(`UPDATE produtos SET estoque = ?, updated_at = datetime('now') WHERE id = ?`)
