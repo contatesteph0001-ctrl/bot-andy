@@ -1,5 +1,5 @@
 import { google }   from 'googleapis'
-import { getConfig } from './db.mjs'
+import { getConfig, getNomeBarbeiroOuNull } from './db.mjs'
 import { staff, schedule, BUFFER_MINUTES, timezone } from './config.mjs'
 import { log, error as logError } from './logger.mjs'
 import { isoBRT } from './time.mjs'
@@ -187,9 +187,11 @@ export async function findFreeSlots(staffId, date, durationMinutes) {
 export async function getNextAvailableAcrossStaff(date, durationMinutes) {
   const results = []
   for (const member of staff.filter(s => s.active)) {
+    const nome = getNomeBarbeiroOuNull(member.id)
+    if (!nome) continue
     const slots = await findFreeSlots(member.id, date, durationMinutes)
     for (const slot of slots) {
-      results.push({ ...slot, staffId: member.id, staffName: member.name })
+      results.push({ ...slot, staffId: member.id, staffName: nome })
     }
   }
   // Ordena por horário, depois por barbeiro

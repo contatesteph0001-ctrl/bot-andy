@@ -24,7 +24,7 @@ import {
   upsertCliente,
   getAgendamentosFuturosCliente,
   listarBarbeiros,
-  getNomeBarbeiroDisplay,
+  getNomeBarbeiroOuNull,
 } from './db.mjs'
 import { M } from './messages.mjs'
 import { log, error as logError } from './logger.mjs'
@@ -301,7 +301,9 @@ export async function askClaude(userMessage, whatsappNumber) {
   const perfil = cliente?.nome ? getPerfilProgressivo(whatsappNumber) : null
   const barbeiros = listarBarbeiros()
   const staffNomesDB = Object.fromEntries(
-    barbeiros.map((b) => [b.id, getNomeBarbeiroDisplay(b.id)]),
+    barbeiros
+      .map((b) => [b.id, getNomeBarbeiroOuNull(b.id)])
+      .filter(([, nome]) => nome !== null),
   )
   const systemPrompt = buildSystemPrompt(cliente?.nome, perfil, { fora_horario: foraHorario }, staffNomesDB)
 

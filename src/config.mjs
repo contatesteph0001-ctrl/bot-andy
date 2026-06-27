@@ -404,10 +404,9 @@ export function buildSystemPrompt(clienteName = null, perfilCliente = null, cont
   const anoAtual  = agora.getFullYear()
 
   // IDs dos barbeiros gerados dinamicamente do staff
-  const staffIds = staff.filter(s => s.active).map(s => {
-    const nomeReal = staffNomesDB?.[s.id] || s.name
-    return `- ${nomeReal}: staff_id = "${s.id}"`
-  }).join('\n')
+  const staffIds = staff.filter(s => s.active && staffNomesDB?.[s.id]).map(s =>
+    `- ${staffNomesDB[s.id]}: staff_id = "${s.id}"`
+  ).join('\n')
 
   const perfilBloco = perfilCliente ? `
 <perfil_cliente>

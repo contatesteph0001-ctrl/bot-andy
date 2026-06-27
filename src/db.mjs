@@ -446,6 +446,13 @@ export function getNomeBarbeiroDisplay(staffId) {
   return `Barbeiro ${slotNum}`
 }
 
+/** Nome real do barbeiro, ou null se a cadeira está vaga (sem usuarios.nome preenchido). */
+export function getNomeBarbeiroOuNull(staffId) {
+  const u = getUsuarioPorStaffId(staffId)
+  const nome = u?.nome?.trim()
+  return nome ? nome : null
+}
+
 export function getUsuarioPorId(id) {
   return getDb()
     .prepare(`SELECT * FROM usuarios WHERE id = ? AND ativo = 1`)

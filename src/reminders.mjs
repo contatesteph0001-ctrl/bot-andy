@@ -25,6 +25,7 @@ import {
   agregarMetricasDoDia,
   purgarMensagensAntigas,
   getNomeBarbeiroDisplay as staffNameById,
+  getNomeBarbeiroOuNull,
 } from './db.mjs'
 import { deleteEvent } from './calendar.mjs'
 import { getUpsellParaServico } from './tools.mjs'
@@ -74,7 +75,11 @@ async function jobLembretes() {
     for (const ag of agendamentos) {
       const hora     = formatHora(ag.data_hora_inicio)
       const servico  = ag.servico_nome || ag.servico_id
-      const barbeiro = staffNameById(ag.staff_id)
+      const barbeiro = getNomeBarbeiroOuNull(ag.staff_id)
+      if (!barbeiro) {
+        warn(`[jobLembretes] Pulando lembrete do agendamento #${ag.id} — staff_id "${ag.staff_id}" sem nome definido`)
+        continue
+      }
       const msg = M.lembrete2h({ nome: ag.nome_cliente, hora, servico, barbeiro })
       enfileirarMensagem(ag.whatsapp_number, msg, 'proativa')
       marcarLembrete2hEnviado(ag.id)

@@ -9,7 +9,7 @@ import { fileURLToPath } from 'url'
 import { staff, schedule, business } from './config.mjs'
 import { findFreeSlots, getNextAvailableAcrossStaff } from './calendar.mjs'
 import { criarAgendamentoTool } from './tools.mjs'
-import { enfileirarMensagem, getServicosAtivos, getServico, getConfig, getProdutosAtivos, getBarbeiros, getNomeBarbeiroDisplay } from './db.mjs'
+import { enfileirarMensagem, getServicosAtivos, getServico, getConfig, getProdutosAtivos, getBarbeiros, getNomeBarbeiroOuNull } from './db.mjs'
 import { isoBRT } from './time.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -73,10 +73,9 @@ bookingRouter.get('/api/produtos', (req, res) => {
 // GET /api/barbeiros
 bookingRouter.get('/api/barbeiros', (req, res) => {
   res.json({
-    barbeiros: getBarbeiros().map((b) => ({
-      id: b.id,
-      name: getNomeBarbeiroDisplay(b.id),
-    })),
+    barbeiros: getBarbeiros()
+      .map((b) => ({ id: b.id, name: getNomeBarbeiroOuNull(b.id) }))
+      .filter((b) => b.name !== null),
   })
 })
 
@@ -119,7 +118,8 @@ bookingRouter.get('/api/disponibilidade', async (req, res) => {
     }
 
     const member = staff.find(s => s.id === staff_id)
-    if (!member?.active) return res.status(400).json({ erro: 'barbeiro inválido' })
+    const nomeAtual = getNomeBarbeiroOuNull(staff_id)
+    if (!member?.active || !nomeAtual) return res.status(400).json({ erro: 'barbeiro inválido' })
 
     const slots = filtrarSlots(await findFreeSlots(staff_id, data, duracao))
     console.log('[debug-slots] limiteMinimo:', limiteMinimo.toISOString(), 'primeiro slot:', slots[0]?.start)
@@ -127,7 +127,7 @@ bookingRouter.get('/api/disponibilidade', async (req, res) => {
       slots: slots.map(sl => ({
         ...sl,
         staffId: staff_id,
-        staffName: getNomeBarbeiroDisplay(staff_id),
+        staffName: nomeAtual,
       })),
     })
   } catch (err) {

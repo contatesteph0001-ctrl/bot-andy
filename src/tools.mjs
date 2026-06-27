@@ -30,6 +30,7 @@ import {
   incrementarNoShowParcial,
   registrarNoShow,
   getNomeBarbeiroDisplay as staffNameById,
+  getNomeBarbeiroOuNull,
 } from './db.mjs'
 
 import { staff, schedule, upsellMap, MIN_ADVANCE_MINUTES, MAX_DAILY_ACTIVE_MESSAGES } from './config.mjs'
@@ -114,6 +115,10 @@ function filtrarSlotsAntecedencia(slots) {
   return slots.filter((slot) => new Date(slot.start || slot.inicio) >= limiteMinimo)
 }
 
+function staffIdsComNome() {
+  return staff.filter(s => s.active).map(s => s.id).filter(id => getNomeBarbeiroOuNull(id))
+}
+
 export async function verificarDisponibilidade({ data, horario, servico_id, staff_id }) {
   // Normaliza valores que Claude pode mandar como string
   if (horario === 'null' || horario === 'undefined' || horario === '') horario = null
@@ -131,6 +136,9 @@ export async function verificarDisponibilidade({ data, horario, servico_id, staf
     // Se horário não especificado, retorna todos slots livres do dia
     if (!horario) {
       if (staff_id && staff_id !== 'qualquer') {
+        if (!getNomeBarbeiroOuNull(staff_id)) {
+          return { disponivel: false, erro: 'Barbeiro inválido.' }
+        }
         const slots = filtrarSlotsAntecedencia(await findFreeSlots(staff_id, dateStr, servico.duracao_minutos))
         return { slots_disponiveis: slots.map(s => s.label), staff_id, data: dateStr }
       }
@@ -156,7 +164,12 @@ export async function verificarDisponibilidade({ data, horario, servico_id, staf
       return { disponivel: false, motivo: `Agendamentos online precisam de pelo menos ${MIN_ADVANCE_MINUTES} minutos de antecedência.` }
     }
 
-    const targetStaff = (staff_id && staff_id !== 'qualquer') ? [staff_id] : staff.filter(s => s.active).map(s => s.id)
+    const targetStaff = (staff_id && staff_id !== 'qualquer')
+      ? (getNomeBarbeiroOuNull(staff_id) ? [staff_id] : [])
+      : staffIdsComNome()
+    if (staff_id && staff_id !== 'qualquer' && !targetStaff.length) {
+      return { disponivel: false, erro: 'Barbeiro inválido.' }
+    }
     const resultados = []
 
     for (const sid of targetStaff) {
@@ -204,7 +217,7 @@ export async function criarAgendamentoTool({ whatsapp_number, cliente_nome, staf
 
     // Resolve "qualquer" para um barbeiro real e disponível no horário pedido.
     if (staff_id === 'qualquer' || !staff_id) {
-      const barbeirosAtivos = staff.filter(s => s.active).map(s => s.id)
+      const barbeirosAtivos = staffIdsComNome()
       let staffEscolhido = null
       for (const sid of barbeirosAtivos) {
         if (await isSlotAvailable(sid, start_iso, servico.duracao_minutos)) {
@@ -217,6 +230,8 @@ export async function criarAgendamentoTool({ whatsapp_number, cliente_nome, staf
       }
       staff_id = staffEscolhido
       log(`staff_id="qualquer" resolvido para "${staff_id}"`)
+    } else if (!getNomeBarbeiroOuNull(staff_id)) {
+      return { sucesso: false, erro: 'Barbeiro inválido.' }
     }
 
     // Validação: serviço não pode terminar após o horário de fechamento
