@@ -11,6 +11,7 @@ import {
   getAgendamentosAguardandoSinal, aprovarSinal, getAgendamento,
   enfileirarMensagem, getMetricasDiarias,
   getBarbeiros, getBarbeiroById,
+  getNomeBarbeiroDisplay as staffNameById,
   calcularComissaoPeriodo, getFechamentosByBarbeiro,
   updateBarbeiro, getComissaoOverrides, setComissaoOverride,
   criarFechamento, getFechamentosAbertos, registrarPagamentoFechamento,
@@ -43,13 +44,6 @@ function escapeHtml(str) {
 }
 
 const ESTOQUE_MINIMO_PADRAO = 3
-
-/** Nome do barbeiro: usuarios (fonte única) → fallback config.mjs */
-function staffNameById(id) {
-  const u = getUsuarioPorStaffId(id)
-  if (u?.nome) return u.nome
-  return staff.find(s => s.id === id)?.name || id
-}
 
 // Garante tabela de histórico de estoque
 try {
@@ -838,7 +832,7 @@ function getRankingProdutividadeAdministrativo(tipo) {
     .all()
   const porId = {}
   for (const r of det) {
-    if (!porId[r.staff_id]) porId[r.staff_id] = { nome: r.barbeiro_nome, atendimentos: 0, total: 0, servicos: [] }
+    if (!porId[r.staff_id]) porId[r.staff_id] = { nome: staffNameById(r.staff_id), atendimentos: 0, total: 0, servicos: [] }
     porId[r.staff_id].atendimentos += r.qtd
     porId[r.staff_id].total += r.sub_total
     porId[r.staff_id].servicos.push({ nome: r.servico_nome || String(r.servico_id || ''), sub: r.sub_total })
@@ -961,7 +955,7 @@ function renderSvgBarrasFinanceiro(barbeiros, totais, maxVal, cores) {
     .map(
       (b, i) => `
     <rect x="${10 + i * 120}" y="4" width="10" height="10" rx="2" fill="${cores[i % cores.length]}" />
-    <text x="${24 + i * 120}" y="13" fill="#888" font-size="11" font-family="Inter,sans-serif">${escapeHtml(b.nome.slice(0, 18))}</text>`,
+    <text x="${24 + i * 120}" y="13" fill="#888" font-size="11" font-family="Inter,sans-serif">${escapeHtml(staffNameById(b.id).slice(0, 18))}</text>`,
     )
     .join('')
 
@@ -2123,11 +2117,11 @@ receptionRouter.post('/caixa/fechar', express.urlencoded({ extended: false }), (
         .join('\n')
       const porBarbeiroTexto = r.porBarbeiro
         .filter(b => b.total > 0)
-        .map(b => `  • ${b.nome}: ${b.atendimentos} atend. / ${b.produtos} prod. → R$ ${Number(b.total).toFixed(2).replace('.', ',')}`)
+        .map(b => `  • ${staffNameById(b.staff_id || b.id)}: ${b.atendimentos} atend. / ${b.produtos} prod. → R$ ${Number(b.total).toFixed(2).replace('.', ',')}`)
         .join('\n')
       const estornosTexto = r.estornos && r.estornos.length > 0
         ? `\n\n⚠️ *Estornos realizados (${r.estornos.length}):*\n` +
-          r.estornos.map(e => `  • ${e.descricao} — R$ ${Number(e.valor_servico).toFixed(2).replace('.', ',')} (${e.barbeiro_nome || e.staff_id})`).join('\n') +
+          r.estornos.map(e => `  • ${e.descricao} — R$ ${Number(e.valor_servico).toFixed(2).replace('.', ',')} (${staffNameById(e.staff_id)})`).join('\n') +
           `\n  Total estornado: -R$ ${Number(r.totalEstornado).toFixed(2).replace('.', ',')}`
         : ''
       const hora = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' })
@@ -2163,7 +2157,7 @@ receptionRouter.get('/caixa', (req, res) => {
           <td class="td-muted">${formatDataHoraPainel(p.created_at)}</td>
           <td>${escapeHtml(p.descricao)}</td>
           <td><span style="font-size:.72rem;color:${p.tipo==='produto'?'#f59e0b':'#60a5fa'}">${p.tipo === 'produto' ? 'Produto' : 'Serviço'}</span></td>
-          <td>${escapeHtml(p.barbeiro_nome || p.staff_id)}</td>
+          <td>${escapeHtml(staffNameById(p.staff_id))}</td>
           <td style="font-size:.75rem;color:#aaa">${escapeHtml(formasStr)}</td>
           <td style="color:var(--green);font-weight:600">${fmtBRL(p.valor_servico)}</td>
           <td><button class="btn btn-danger btn-sm" onclick="if(confirm('Estornar este pagamento? Isso será registrado no relatório.'))fetch('/recepcao/caixa/estornar/${p.id}',{method:'POST'}).then(()=>location.reload())">Estornar</button></td>
@@ -2178,7 +2172,7 @@ receptionRouter.get('/caixa', (req, res) => {
           <td class="td-muted">${formatDataHoraPainel(e.estornado_em)}</td>
           <td style="text-decoration:line-through;color:var(--muted)">${escapeHtml(e.descricao)}</td>
           <td><span style="font-size:.72rem;color:var(--red-sem)">Estornado</span></td>
-          <td>${escapeHtml(e.barbeiro_nome || e.staff_id)}</td>
+          <td>${escapeHtml(staffNameById(e.staff_id))}</td>
           <td style="font-size:.75rem;color:#555">—</td>
           <td style="color:var(--red-sem);font-weight:600">-${fmtBRL(e.valor_servico)}</td>
           <td></td>
@@ -2239,7 +2233,7 @@ receptionRouter.get('/caixa', (req, res) => {
   <div class="table-wrap" style="margin-bottom:1.25rem">
     <table>
       <thead><tr><th>Barbeiro</th><th>Atendimentos</th><th>Produtos</th><th>Total</th></tr></thead>
-      <tbody>${resumo.porBarbeiro.length ? resumo.porBarbeiro.map(b => `<tr><td>${escapeHtml(b.nome)}</td><td class="td-muted">${b.atendimentos}</td><td class="td-muted">${b.produtos}</td><td style="color:var(--green);font-weight:600">${fmtBRL(b.total)}</td></tr>`).join('') : `<tr><td colspan="4"><div class="empty"><div class="empty-text">Sem dados</div></div></td></tr>`}</tbody>
+      <tbody>${resumo.porBarbeiro.length ? resumo.porBarbeiro.map(b => `<tr><td>${escapeHtml(staffNameById(b.staff_id))}</td><td class="td-muted">${b.atendimentos}</td><td class="td-muted">${b.produtos}</td><td style="color:var(--green);font-weight:600">${fmtBRL(b.total)}</td></tr>`).join('') : `<tr><td colspan="4"><div class="empty"><div class="empty-text">Sem dados</div></div></td></tr>`}</tbody>
     </table>
   </div>
   <div class="section-header"><span class="section-title">Pagamentos registrados</span><span class="section-count">${resumo.pagamentos.length}</span></div>
@@ -4051,7 +4045,7 @@ router.get('/financeiro/comissoes', (req, res) => {
   const ate = req.query.ate || hojeStr()
   const msg = req.query.msg || ''
   const servicos = getServicosAtivos()
-  const barberos = getBarbeiros().filter((b) => b.ativo).sort((a, z) => a.nome.localeCompare(z.nome))
+  const barberos = getBarbeiros().filter((b) => b.ativo).sort((a, z) => staffNameById(a.id).localeCompare(staffNameById(z.id)))
   let cards = ''
 
   for (const b of barberos) {
@@ -4092,7 +4086,7 @@ router.get('/financeiro/comissoes', (req, res) => {
     cards += `
     <div style="border:1px solid var(--border);border-radius:12px;background:var(--elevated);padding:1rem">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:.5rem;margin-bottom:.5rem;flex-wrap:wrap">
-        <div><strong>${escapeHtml(b.nome)}</strong><div style="margin-top:.35rem">${semPctBadge}</div></div>
+        <div><strong>${escapeHtml(staffNameById(b.id))}</strong><div style="margin-top:.35rem">${semPctBadge}</div></div>
         <div style="display:flex;flex-wrap:wrap;gap:.35rem">
           ${
             pctPad === 0
@@ -4109,7 +4103,7 @@ router.get('/financeiro/comissoes', (req, res) => {
         <div><span class="fin-mini">Comissão estimada</span><div><strong style="color:var(--blue-l)">${fmtBRL(totalComEst)}</strong></div></div>
       </div>
       <dialog id="dlg-f-${escapeHtml(b.id)}" class="finance-dlg">
-        <div class="fin-dlg-hd">${ic.check} Novo fechamento — ${escapeHtml(b.nome)}</div>
+        <div class="fin-dlg-hd">${ic.check} Novo fechamento — ${escapeHtml(staffNameById(b.id))}</div>
         <form method="POST" action="/admin/financeiro/fechamentos/criar">
           <input type="hidden" name="barbeiro_id" value="${escapeHtml(b.id)}">
           <div class="fin-dlg-bd">
@@ -4140,7 +4134,7 @@ router.get('/financeiro/comissoes', (req, res) => {
       const v = Number(b.comissao_padrao_pct) || 0
       return `
     <div class="form-group" id="cfg-padrao-${escapeHtml(b.id)}" style="margin:.5rem 0;">
-      <label class="form-label">${escapeHtml(b.nome)} — % padrão</label>
+      <label class="form-label">${escapeHtml(staffNameById(b.id))} — % padrão</label>
       <input type="number" step="0.01" min="0" max="100" name="pct_${b.id}" value="${v}">
     </div>`
     })
@@ -4212,7 +4206,7 @@ router.get('/financeiro/fechamentos', (req, res) => {
   const barberos = getBarbeiros().filter((b) => b.ativo)
   const optBarb =
     `<option value="" ${!bid ? 'selected' : ''}>Todos os barbeiros</option>` +
-    barberos.map((b) => `<option value="${escapeHtml(b.id)}" ${bid === b.id ? 'selected' : ''}>${escapeHtml(b.nome)}</option>`).join('')
+    barberos.map((b) => `<option value="${escapeHtml(b.id)}" ${bid === b.id ? 'selected' : ''}>${escapeHtml(staffNameById(b.id))}</option>`).join('')
 
   const filtLinks = `
   <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin-bottom:.75rem">
@@ -4250,7 +4244,7 @@ router.get('/financeiro/fechamentos', (req, res) => {
           return `
 <div style="border:1px solid var(--border);border-radius:12px;background:var(--elevated);padding:1rem;margin-bottom:.85rem;border-left:3px solid ${stCol}">
   <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:.5rem;align-items:center">
-    <div><strong>${escapeHtml(f.barbeiro_nome || f.barbeiro_id)}</strong> · <span style="color:${stCol};font-weight:700;font-size:.78rem">${stLabel}</span></div>${acaoPg}</div>
+    <div><strong>${escapeHtml(staffNameById(f.barbeiro_id))}</strong> · <span style="color:${stCol};font-weight:700;font-size:.78rem">${stLabel}</span></div>${acaoPg}</div>
   <div class="fin-mini">${escapeHtml(f.periodo_inicio)} → ${escapeHtml(f.periodo_fim)}</div>
   <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:.65rem;margin-top:.65rem;font-size:.82rem">
     <div><span class="fin-mini">Atendimentos</span><div>${f.n_atendimentos ?? 0}</div></div>
@@ -4454,7 +4448,7 @@ router.get('/financeiro/caixa-hoje', (req, res) => {
   <div class="table-wrap" style="margin-bottom:1.25rem">
     <table>
       <thead><tr><th>Barbeiro</th><th>Atendimentos</th><th>Produtos</th><th>Total</th></tr></thead>
-      <tbody>${r.porBarbeiro.length ? r.porBarbeiro.map(b => `<tr><td>${escapeHtml(b.nome)}</td><td class="td-muted">${b.atendimentos}</td><td class="td-muted">${b.produtos}</td><td style="color:var(--green);font-weight:600">${fmtBRL(b.total)}</td></tr>`).join('') : `<tr><td colspan="4"><div class="empty"><div class="empty-text">Sem dados</div></div></td></tr>`}</tbody>
+      <tbody>${r.porBarbeiro.length ? r.porBarbeiro.map(b => `<tr><td>${escapeHtml(staffNameById(b.staff_id))}</td><td class="td-muted">${b.atendimentos}</td><td class="td-muted">${b.produtos}</td><td style="color:var(--green);font-weight:600">${fmtBRL(b.total)}</td></tr>`).join('') : `<tr><td colspan="4"><div class="empty"><div class="empty-text">Sem dados</div></div></td></tr>`}</tbody>
     </table>
   </div>
   ${r.semPagamento.length ? `<div class="alert" style="background:var(--amber-dim);border:1px solid rgba(245,158,11,.3);color:var(--amber);padding:.7rem 1rem;border-radius:var(--radius-sm);font-size:.82rem">${ic.warn} ${r.semPagamento.length} atendimento(s) concluído(s) sem pagamento.</div>` : ''}

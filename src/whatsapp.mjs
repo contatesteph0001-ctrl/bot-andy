@@ -3,7 +3,7 @@ import express    from 'express'
 import OpenAI     from 'openai'
 import fs         from 'fs'
 import path       from 'path'
-import { SESSION, PORT, staff } from './config.mjs'
+import { SESSION, PORT } from './config.mjs'
 import { askClaude, getActiveConversationCount } from './claude.mjs'
 import {
   upsertCliente, logMensagem, marcarLgpdAceito, getCliente,
@@ -27,7 +27,7 @@ import {
   handleLoginPost,
 } from './panel.mjs'
 import { requireAuth, requireRole, redirectPosLogin, currentUser } from './auth.mjs'
-import { getUsuarioPorStaffId, getDb, listarBarbeiros, trocarBarbeiro } from './db.mjs'
+import { getDb, listarBarbeiros, trocarBarbeiro, getNomeBarbeiroDisplay as staffNameById } from './db.mjs'
 import { bookingRouter } from './booking.mjs'
 import { registerSender } from './queue.mjs'
 import { temDadoSensivel, sanitizarTexto, tentativaInjection } from './security.mjs'
@@ -40,12 +40,6 @@ app.use(express.json())
 
 const MAX_FOTOS_CONVERSA = 5
 const MAX_AUDIO_SEGUNDOS = 120
-
-function staffNameById(id) {
-  const u = getUsuarioPorStaffId(id)
-  if (u?.nome) return u.nome
-  return staff.find(s => s.id === id)?.name || id
-}
 
 function getOpenAI() {
   const key = process.env.OPENAI_API_KEY
@@ -168,7 +162,12 @@ export function createExpressApp() {
   }))
 
   app.get('/admin/barbeiros', requireAuth, requireRole('admin'), (req, res) => {
-    res.json(listarBarbeiros())
+    res.json(
+      listarBarbeiros().map((b) => ({
+        ...b,
+        nome: staffNameById(b.id),
+      })),
+    )
   })
 
   app.post('/admin/barbeiros/:staffId/trocar', requireAuth, requireRole('admin'), express.urlencoded({ extended: true }), (req, res) => {

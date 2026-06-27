@@ -13,7 +13,6 @@ import {
   marcarNotificadoFila,
   expirarFilaPassada,
   getConfig,
-  getUsuarioPorStaffId,
   getCliente,
   getDb,
   enfileirarMensagem,
@@ -25,19 +24,13 @@ import {
   limparAguardandoAndy,
   agregarMetricasDoDia,
   purgarMensagensAntigas,
+  getNomeBarbeiroDisplay as staffNameById,
 } from './db.mjs'
 import { deleteEvent } from './calendar.mjs'
 import { getUpsellParaServico } from './tools.mjs'
-import { staff } from './config.mjs'
 import { M } from './messages.mjs'
 import { processarFilaProativa } from './queue.mjs'
 import { log, warn, error as logError } from './logger.mjs'
-
-function staffNameById(id) {
-  const u = getUsuarioPorStaffId(id)
-  if (u?.nome) return u.nome
-  return staff.find(s => s.id === id)?.name || id
-}
 
 function formatHora(isoStr) {
   return new Date(isoStr).toLocaleTimeString('pt-BR', {

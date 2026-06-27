@@ -26,10 +26,10 @@ import {
   registrarInteresseProduto,
   registrarSinalRecebido,
   getConfig,
-  getUsuarioPorStaffId,
   enfileirarMensagem,
   incrementarNoShowParcial,
   registrarNoShow,
+  getNomeBarbeiroDisplay as staffNameById,
 } from './db.mjs'
 
 import { staff, schedule, upsellMap, MIN_ADVANCE_MINUTES, MAX_DAILY_ACTIVE_MESSAGES } from './config.mjs'
@@ -84,12 +84,6 @@ function buildSlotISO(dateStr, timeStr) {
   const t = timeStr.replace('h', ':').replace('::', ':')
   const [h, m = '00'] = t.split(':')
   return `${dateStr}T${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:00-03:00`
-}
-
-function staffNameById(id) {
-  const u = getUsuarioPorStaffId(id)
-  if (u?.nome) return u.nome
-  return staff.find(s => s.id === id)?.name || id
 }
 
 function isOpenDay(dateStr) {

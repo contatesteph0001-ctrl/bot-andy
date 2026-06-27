@@ -9,7 +9,7 @@ import { fileURLToPath } from 'url'
 import { staff, schedule, business } from './config.mjs'
 import { findFreeSlots, getNextAvailableAcrossStaff } from './calendar.mjs'
 import { criarAgendamentoTool } from './tools.mjs'
-import { enfileirarMensagem, getServicosAtivos, getServico, getConfig, getProdutosAtivos } from './db.mjs'
+import { enfileirarMensagem, getServicosAtivos, getServico, getConfig, getProdutosAtivos, getBarbeiros, getNomeBarbeiroDisplay } from './db.mjs'
 import { isoBRT } from './time.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -73,7 +73,10 @@ bookingRouter.get('/api/produtos', (req, res) => {
 // GET /api/barbeiros
 bookingRouter.get('/api/barbeiros', (req, res) => {
   res.json({
-    barbeiros: staff.filter(s => s.active).map(s => ({ id: s.id, name: s.name })),
+    barbeiros: getBarbeiros().map((b) => ({
+      id: b.id,
+      name: getNomeBarbeiroDisplay(b.id),
+    })),
   })
 })
 
@@ -124,7 +127,7 @@ bookingRouter.get('/api/disponibilidade', async (req, res) => {
       slots: slots.map(sl => ({
         ...sl,
         staffId: staff_id,
-        staffName: member.name,
+        staffName: getNomeBarbeiroDisplay(staff_id),
       })),
     })
   } catch (err) {

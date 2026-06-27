@@ -438,6 +438,14 @@ export function getUsuarioPorStaffId(staffId) {
     .get(staffId)
 }
 
+/** Nome de exibição do barbeiro — fonte única: usuarios.nome */
+export function getNomeBarbeiroDisplay(staffId) {
+  const u = getUsuarioPorStaffId(staffId)
+  if (u?.nome) return u.nome
+  const slotNum = String(staffId).replace(/\D/g, '') || '?'
+  return `Barbeiro ${slotNum}`
+}
+
 export function getUsuarioPorId(id) {
   return getDb()
     .prepare(`SELECT * FROM usuarios WHERE id = ? AND ativo = 1`)
@@ -1983,7 +1991,12 @@ export function getResumoCaixaDia(data) {
   const porBarbeiro = {}
   for (const p of pagamentos) {
     if (!porBarbeiro[p.staff_id]) {
-      porBarbeiro[p.staff_id] = { nome: p.barbeiro_nome || p.staff_id, total: 0, atendimentos: 0, produtos: 0 }
+      porBarbeiro[p.staff_id] = {
+        nome: getNomeBarbeiroDisplay(p.staff_id),
+        total: 0,
+        atendimentos: 0,
+        produtos: 0,
+      }
     }
     porBarbeiro[p.staff_id].total += Number(p.valor_servico) || 0
     if (p.tipo === 'servico') porBarbeiro[p.staff_id].atendimentos += 1
